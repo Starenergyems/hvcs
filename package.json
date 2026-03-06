@@ -1,0 +1,13 @@
+{
+  "name": "hvcs-login",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Playwright helper for capturing Taipower HVCS login state",
+  "scripts": {
+    "login": "node scripts/hvcs-login.js",
+    "extract:dashboard": "node scripts/extract-dashboard.js"
+  },
+  "dependencies": {
+    "playwright": "^1.52.0"
+  }
+}
