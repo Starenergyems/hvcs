@@ -31,6 +31,8 @@ const AUTH_TIMEOUT_MS = Number(process.env.HVCS_AUTH_TIMEOUT_MS || 180000);
 const ELECTRIC_SELECTION_TIMEOUT_MS = Number(process.env.HVCS_ELECTRIC_SELECTION_TIMEOUT_MS || 120000);
 const DASHBOARD_LOAD_TIMEOUT_MS = Number(process.env.HVCS_DASHBOARD_TIMEOUT_MS || 120000);
 const MANUAL_CYCLE_MONITOR = /^(1|true|yes)$/i.test((process.env.HVCS_MANUAL_TO_CYCLE || "").trim());
+const DOMCONTENTLOADED_TIMEOUT_MS = Number(process.env.HVCS_DOMCONTENTLOADED_TIMEOUT_MS || 10000);
+const NETWORKIDLE_TIMEOUT_MS = Number(process.env.HVCS_NETWORKIDLE_TIMEOUT_MS || 5000);
 const ACCOUNT_SELECTOR =
   'input[placeholder*="帳號"], input[placeholder*="使用者"], input[name*="Account"], input[id*="Account"], input[name*="User"], input[id*="User"], input[autocomplete="username"], input[autocomplete="email"]';
 const PASSWORD_SELECTOR =
@@ -97,8 +99,12 @@ function normalizeText(value) {
 }
 
 async function waitForPageSettled(page, extraWaitMs = 900) {
-  await page.waitForLoadState("domcontentloaded").catch(() => {});
-  await page.waitForLoadState("networkidle").catch(() => {});
+  await page
+    .waitForLoadState("domcontentloaded", { timeout: DOMCONTENTLOADED_TIMEOUT_MS })
+    .catch(() => {});
+  await page
+    .waitForLoadState("networkidle", { timeout: NETWORKIDLE_TIMEOUT_MS })
+    .catch(() => {});
   if (extraWaitMs > 0) {
     await page.waitForTimeout(extraWaitMs);
   }
@@ -365,7 +371,7 @@ async function getActivePage(context, fallbackPage) {
     throw new Error("No browser page is available.");
   }
 
-  await waitForPageSettled(page, 500);
+  await waitForPageSettled(page, 250);
   return page;
 }
 
@@ -421,7 +427,7 @@ async function waitForElectricNumberTransition(context, initialPage, startUrl, s
 
   while (Date.now() < deadline) {
     page = await getActivePage(context, page);
-    await waitForPageSettled(page, 500);
+    await waitForPageSettled(page, 150);
 
     const currentUrl = page.url();
     const currentText = await page.locator("body").innerText().catch(() => "");
@@ -450,7 +456,7 @@ async function waitForTargetTransition(context, initialPage, startUrl, startText
 
   while (Date.now() < deadline) {
     page = await getActivePage(context, page);
-    await waitForPageSettled(page, 500);
+    await waitForPageSettled(page, 150);
 
     if (await pageLooksLikeTarget(page)) {
       return page;
@@ -811,6 +817,278 @@ async function collectVisibleText(page) {
   return normalizeText(text);
 }
 
+async function collectCycleRawChartData(page) {
+  return page
+    .evaluate(() => {
+      const charts = (window.Highcharts && Array.isArray(window.Highcharts.charts)
+        ? window.Highcharts.charts
+        : []
+      )
+        .filter(Boolean)
+        .map((chart) => {
+          const title = chart.title?.textStr || "";
+          const renderTo = chart.renderTo?.id || null;
+          const xAxisCategories =
+            chart.xAxis?.[0]?.categories?.slice?.() ||
+            chart.xAxis?.[0]?.tickPositions?.slice?.() ||
+            [];
+
+          const yAxes = (chart.yAxis || []).map((axis) => ({
+            title: axis.axisTitle?.textStr || axis.options?.title?.text || "",
+            min: axis.min ?? null,
+            max: axis.max ?? null,
+          }));
+
+          const series = (chart.series || []).map((seriesItem) => ({
+            name: seriesItem.name || "",
+            type: seriesItem.type || "",
+            stack: seriesItem.options?.stack ?? null,
+            color: seriesItem.color || seriesItem.options?.color || null,
+            visible: seriesItem.visible !== false,
+            data: (seriesItem.options?.data || []).map((point) => {
+              if (typeof point === "number" || point === null) {
+                return point;
+              }
+              if (Array.isArray(point)) {
+                return { x: point[0] ?? null, y: point[1] ?? null };
+              }
+              if (point && typeof point === "object") {
+                return {
+                  x: point.x ?? null,
+                  y: point.y ?? null,
+                };
+              }
+              return point;
+            }),
+          }));
+
+          return {
+            title,
+            renderTo,
+            xAxisCategories,
+            yAxes,
+            series,
+          };
+        });
+
+      return charts;
+    })
+    .catch(() => []);
+}
+
+function normalizeChartValues(data) {
+  if (!Array.isArray(data)) return [];
+  return data.map((point) => {
+    if (typeof point === "number") return point;
+    if (point === null) return null;
+    if (Array.isArray(point)) return toNumber(point[1]);
+    if (typeof point === "object") return toNumber(point.y);
+    return toNumber(point);
+  });
+}
+
+function pickLatestCycleCharts(rawCharts) {
+  const usageMatch = [];
+  const billingMatch = [];
+
+  for (const chart of rawCharts || []) {
+    const title = normalizeText(chart?.title || "");
+    const renderTo = normalizeText(chart?.renderTo || "");
+
+    if (title.includes("用電量比較") || renderTo === "container") {
+      usageMatch.push(chart);
+    }
+    if (title.includes("電費比較") || renderTo === "billingcompare") {
+      billingMatch.push(chart);
+    }
+  }
+
+  return {
+    usage: usageMatch[usageMatch.length - 1] || null,
+    billing: billingMatch[billingMatch.length - 1] || null,
+  };
+}
+
+function trimLeadingZeroCategory(categories, seriesValues) {
+  if (!Array.isArray(categories) || categories.length === 0) return categories || [];
+  const first = String(categories[0] || "");
+  const shouldTrimFirst = /^(0|0月)$/i.test(first);
+  if (!shouldTrimFirst) return categories;
+
+  const maxSeriesLen = Math.max(0, ...seriesValues.map((values) => values.length));
+  if (maxSeriesLen === categories.length - 1) {
+    return categories.slice(1);
+  }
+  return categories;
+}
+
+function monthIndexFromCategory(category, fallbackIndex) {
+  const text = String(category || "").trim();
+  const match = text.match(/(\d{1,2})/);
+  if (match) {
+    const month = Number(match[1]);
+    if (month >= 1 && month <= 12) {
+      return month - 1;
+    }
+  }
+  if (fallbackIndex >= 0 && fallbackIndex < 12) {
+    return fallbackIndex;
+  }
+  return -1;
+}
+
+function buildNormalizedChart(chart, chartKey, valueUnit) {
+  if (!chart) return null;
+
+  const rawSeries = Array.isArray(chart.series) ? chart.series : [];
+  const series = rawSeries
+    .map((item) => {
+      const values = normalizeChartValues(item.data || []);
+      return {
+        name: normalizeText(item.name || ""),
+        period: normalizeText(String(item.stack || "")) || null,
+        values,
+      };
+    })
+    .filter((item) => item.name && item.values.length > 0);
+
+  const seriesValues = series.map((item) => item.values);
+  let categories = Array.isArray(chart.xAxisCategories) ? chart.xAxisCategories.map((x) => String(x)) : [];
+  categories = trimLeadingZeroCategory(categories, seriesValues);
+
+  // Align lengths to categories for direct downstream usage.
+  const alignedSeries = series.map((item) => {
+    const alignedValues = categories.map((_, idx) => item.values[idx] ?? null);
+    const points = categories
+      .map((category, idx) => ({
+        category,
+        category_index: idx,
+        value: alignedValues[idx],
+      }))
+      .filter((point) => point.value !== null);
+
+    return {
+      name: item.name,
+      period: item.period,
+      points,
+    };
+  });
+
+  const metricByYear = {};
+  for (const seriesItem of alignedSeries) {
+    const metric = seriesItem.name;
+    const year = seriesItem.period || "unknown";
+    if (!metricByYear[metric]) {
+      metricByYear[metric] = {};
+    }
+    if (!metricByYear[metric][year]) {
+      metricByYear[metric][year] = Array(12).fill(null);
+    }
+
+    for (const point of seriesItem.points) {
+      const idx = monthIndexFromCategory(point.category, point.category_index);
+      if (idx === -1) continue;
+      metricByYear[metric][year][idx] = point.value;
+    }
+  }
+
+  return {
+    key: chartKey,
+    title: chart.title || "",
+    unit: valueUnit,
+    categories,
+    series: alignedSeries,
+    metric_by_year: metricByYear,
+  };
+}
+
+function buildCycleDataModel(rawCharts) {
+  const picked = pickLatestCycleCharts(rawCharts || []);
+  const usage = buildNormalizedChart(picked.usage, "usage", "kWh");
+  const billing = buildNormalizedChart(picked.billing, "billing", "TWD");
+
+  return {
+    schema_version: 1,
+    charts: [usage, billing].filter(Boolean),
+  };
+}
+
+function parseJsArrayFromHtml(html, variableName) {
+  const escaped = variableName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = html.match(new RegExp(`var\\s+${escaped}\\s*=\\s*(\\[[\\s\\S]*?\\]);`));
+  if (!match) return null;
+  try {
+    return JSON.parse(match[1].replace(/'/g, '"'));
+  } catch {
+    return null;
+  }
+}
+
+function parseOnPointFromHtml(html) {
+  const block = html.match(/var\s+ONPoint\s*=\s*(\[[\s\S]*?\]);/);
+  if (!block) return [];
+
+  const jsonLike = block[1]
+    .replace(/(\w+)\s*:/g, '"$1":')
+    .replace(/'/g, '"')
+    .replace(/,\s*([}\]])/g, "$1");
+
+  try {
+    const parsed = JSON.parse(jsonLike);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseCycleRawChartDataFromHtml(html) {
+  const x1 = parseJsArrayFromHtml(html, "highchart_x1") || [];
+  const x2 = parseJsArrayFromHtml(html, "highchart_x2") || [];
+  const onPoint = parseOnPointFromHtml(html);
+
+  const years = [1, 2, 3, 4, 5]
+    .map((idx) => {
+      const match = html.match(new RegExp(`seriesName${idx}\\s*=\\s*'([^']*)'`));
+      return match?.[1] || "";
+    })
+    .filter(Boolean);
+
+  const buildBillSeries = (suffix, label) =>
+    years.map((year, idx) => {
+      const n = idx + 1;
+      const data = parseJsArrayFromHtml(html, `highchart_BillY${n}_${suffix}`) || [];
+      return {
+        name: label,
+        stack: year,
+        data,
+      };
+    });
+
+  return [
+    {
+      title: "用電量比較",
+      renderTo: "container",
+      xAxisCategories: x1,
+      series: onPoint.map((item) => ({
+        name: item.name || "",
+        stack: item.stack ?? null,
+        color: item.color || null,
+        data: Array.isArray(item.data) ? item.data : [],
+      })),
+    },
+    {
+      title: "電費比較",
+      renderTo: "billingCompare",
+      xAxisCategories: x2,
+      series: [
+        ...buildBillSeries("EX", "流動電費"),
+        ...buildBillSeries("NM", "基本電費(約定)"),
+        ...buildBillSeries("OVER", "基本電費(非約定)"),
+      ],
+    },
+  ];
+}
+
 function createCycleNavigationMonitor(context) {
   const events = [];
   const startedAt = Date.now();
@@ -825,7 +1103,6 @@ function createCycleNavigationMonitor(context) {
       method: request.method(),
       url,
       resourceType: request.resourceType(),
-      postData: request.postData() || null,
       headers: {
         referer: request.headers().referer || null,
         origin: request.headers().origin || null,
@@ -1067,11 +1344,23 @@ async function main() {
     const targetPage = await navigateToTarget(context, authenticatedPage);
 
     if (TARGET_PAGE === "cycle") {
+      if (!(await pageLooksLikeCycle(targetPage))) {
+        throw new Error(
+          `Target page mismatch: expected cycle page but current URL is ${targetPage.url()}`
+        );
+      }
+
       log(`Landed on target page: ${targetPage.url()}`);
       log("Select the checkboxes/options you want in the browser.");
       log('When ready, return to terminal and press Enter to continue extraction.');
       await waitForEnter("> ");
       await waitForPageSettled(targetPage);
+
+      const html = await targetPage.content();
+      const liveChartData = await collectCycleRawChartData(targetPage);
+      const htmlChartData = parseCycleRawChartDataFromHtml(html);
+      const chartData = liveChartData.length ? liveChartData : htmlChartData;
+      const cycleData = buildCycleDataModel(chartData);
 
       const payload = {
         extractedAt: new Date().toISOString(),
@@ -1083,6 +1372,8 @@ async function main() {
         targetPage: TARGET_PAGE,
         title: await targetPage.title().catch(() => ""),
         text: await collectVisibleText(targetPage),
+        chartDataSource: liveChartData.length ? "window.Highcharts.charts" : "rendered-html-script",
+        cycleData,
       };
 
       await writeArtifacts(targetPage, payload);
