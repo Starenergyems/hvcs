@@ -9,6 +9,7 @@ const LOGIN_PATH_FRAGMENT = "/Account/NewLogon";
 const UID_METER_LIST_PATH = "/hvcs/Customer/Module/UIDMeterNoList";
 const CYCLE_PATH = "/hvcs/Customer/Module/Cycle";
 const BASIC_PATH = "/hvcs/Customer/Module/Basic";
+const POWER_ANALYZE_PATH = "/hvcs/Customer/Module/PowerAnalyze";
 const AUTH_DIR = path.resolve(__dirname, "..", ".auth");
 const USER_DATA_DIR = path.join(AUTH_DIR, "browser-profile");
 const STORAGE_STATE_PATH = path.join(AUTH_DIR, "storage-state.json");
@@ -19,6 +20,8 @@ const TARGET_BASENAME =
     ? "cycle-page"
     : TARGET_PAGE === "all"
       ? "all"
+    : TARGET_PAGE === "power_analyze"
+      ? "power-analyze"
     : TARGET_PAGE === "price"
       ? "price"
       : TARGET_PAGE === "energy_usage"
@@ -38,12 +41,15 @@ const USER_INFO_TEXT = "用戶資訊";
 const USER_PROFILE_TEXT = "用戶資料";
 const ENERGY_USAGE_TEXT = "用電紀錄";
 const PRICE_RECORD_TEXT = "電費紀錄";
+const POWER_ANALYZE_TEXT = "需量分析";
+const FIFTEEN_MIN_TEXT = "每15分鐘";
 const AUTH_TIMEOUT_MS = Number(process.env.HVCS_AUTH_TIMEOUT_MS || 180000);
 const ELECTRIC_SELECTION_TIMEOUT_MS = Number(process.env.HVCS_ELECTRIC_SELECTION_TIMEOUT_MS || 120000);
 const DASHBOARD_LOAD_TIMEOUT_MS = Number(process.env.HVCS_DASHBOARD_TIMEOUT_MS || 120000);
 const MANUAL_CYCLE_MONITOR = /^(1|true|yes)$/i.test((process.env.HVCS_MANUAL_TO_CYCLE || "").trim());
 const DOMCONTENTLOADED_TIMEOUT_MS = Number(process.env.HVCS_DOMCONTENTLOADED_TIMEOUT_MS || 10000);
 const NETWORKIDLE_TIMEOUT_MS = Number(process.env.HVCS_NETWORKIDLE_TIMEOUT_MS || 5000);
+const GENERAL_RENDER_TIMEOUT_MS = 180000;
 const ACCOUNT_SELECTOR =
   'input[placeholder*="帳號"], input[placeholder*="使用者"], input[name*="Account"], input[id*="Account"], input[name*="User"], input[id*="User"], input[autocomplete="username"], input[autocomplete="email"]';
 const PASSWORD_SELECTOR =
@@ -268,6 +274,9 @@ async function pageLooksLikeTarget(page) {
   if (TARGET_PAGE === "cycle") {
     return pageLooksLikeCycle(page);
   }
+  if (TARGET_PAGE === "power_analyze") {
+    return pageLooksLikePowerAnalyze(page);
+  }
   if (TARGET_PAGE === "all") {
     return pageLooksLikeBasic(page);
   }
@@ -282,6 +291,19 @@ async function pageLooksLikeTarget(page) {
   }
 
   return pageLooksLikeDashboard(page);
+}
+
+async function pageLooksLikePowerAnalyze(page) {
+  if (page.url().includes(POWER_ANALYZE_PATH)) {
+    return true;
+  }
+
+  const title = normalizeText(await page.title().catch(() => ""));
+  if (title.includes(POWER_ANALYZE_TEXT)) {
+    return true;
+  }
+
+  return pageHasVisibleText(page, POWER_ANALYZE_TEXT);
 }
 
 async function pageLooksLikePrice(page) {
@@ -769,6 +791,25 @@ async function navigateToTarget(context, page) {
     return page;
   }
 
+  if (TARGET_PAGE === "power_analyze") {
+    const startUrl = page.url();
+    const startText = await page.locator("body").innerText().catch(() => "");
+
+    await page.goto(`https://service.taipower.com.tw${POWER_ANALYZE_PATH}`, {
+      waitUntil: "domcontentloaded",
+    });
+    await waitForPageSettled(page);
+    await waitForPowerAnalyzeRendered(page, startText, GENERAL_RENDER_TIMEOUT_MS);
+
+    const analyzePage = await waitForTargetTransition(context, page, startUrl, startText);
+    if (analyzePage) {
+      return analyzePage;
+    }
+
+    await promptForManualNavigation(page, "`需量分析`");
+    return page;
+  }
+
   if (TARGET_PAGE === "basic") {
     const startUrl = page.url();
     const startText = await page.locator("body").innerText().catch(() => "");
@@ -815,6 +856,7 @@ async function navigateToTarget(context, page) {
       await promptForManualNavigation(page, `\`${ENERGY_USAGE_TEXT}\``);
       return page;
     }
+    await waitForTabRendered(page, normalizeText(startText), GENERAL_RENDER_TIMEOUT_MS);
 
     const usagePage = await waitForTargetTransition(context, page, startUrl, startText);
     if (usagePage) {
@@ -844,6 +886,7 @@ async function navigateToTarget(context, page) {
       await promptForManualNavigation(page, `\`${PRICE_RECORD_TEXT}\``);
       return page;
     }
+    await waitForTabRendered(page, normalizeText(startText), GENERAL_RENDER_TIMEOUT_MS);
 
     const pricePage = await waitForTargetTransition(context, page, startUrl, startText);
     if (pricePage) {
@@ -1460,6 +1503,254 @@ function aggregateEnergyUsageSections(sections) {
   });
 }
 
+function getYesterdayInfo() {
+  const date = new Date();
+  date.setDate(date.getDate() - 1);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+
+  const rocYear = String(year - 1911);
+  const rocDate = `${rocYear}/${month}/${day}`;
+  const isoDate = `${year}-${month}-${day}`;
+  const slashDate = `${year}/${month}/${day}`;
+
+  return {
+    isoDate,
+    slashDate,
+    rocDate,
+  };
+}
+
+async function selectPowerAnalyzeYstdAndFifteenMin(page) {
+  const beforeFifteenText = normalizeText(await page.locator("body").innerText().catch(() => ""));
+  const clickedFifteen = await clickByText(page, FIFTEEN_MIN_TEXT);
+  if (clickedFifteen) {
+    await waitForPageSettled(page, 600);
+    await waitForPowerAnalyzeRendered(page, beforeFifteenText, GENERAL_RENDER_TIMEOUT_MS);
+  }
+
+  const y = getYesterdayInfo();
+  const beforeQueryText = normalizeText(await page.locator("body").innerText().catch(() => ""));
+
+  await setPowerAnalyzeDate(page, y).catch(() => {});
+  await waitForPageSettled(page, 400);
+  await clickPowerAnalyzeQuery(page).catch(() => {});
+  await waitForPageSettled(page, 700);
+  await waitForPowerAnalyzeRendered(
+    page,
+    beforeQueryText,
+    GENERAL_RENDER_TIMEOUT_MS,
+    y.isoDate
+  );
+}
+
+async function setPowerAnalyzeDate(page, dateInfo) {
+  const yearNum = String(Number(dateInfo.isoDate.slice(0, 4)));
+  const monthNum = String(Number(dateInfo.isoDate.slice(5, 7)));
+  const dayNum = String(Number(dateInfo.isoDate.slice(8, 10)));
+
+  await page.evaluate(
+    ({ year, month, day, iso }) => {
+      const normalize = (value) => String(value ?? "").replace(/\s+/g, "").trim();
+      const dispatch = (el) => {
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      };
+
+      // Preferred path: three dropdowns for year/month/day.
+      const selects = Array.from(document.querySelectorAll("select")).filter((el) => {
+        const style = window.getComputedStyle(el);
+        if (style.display === "none" || style.visibility === "hidden") return false;
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      });
+
+      const setSelect = (target, desired) => {
+        if (!target) return false;
+        const options = Array.from(target.options || []);
+        const match = options.find((opt) => normalize(opt.value) === desired || normalize(opt.textContent) === desired);
+        if (!match) return false;
+        target.value = match.value;
+        dispatch(target);
+        return true;
+      };
+
+      if (selects.length >= 3) {
+        setSelect(selects[0], year);
+        setSelect(selects[1], month);
+        setSelect(selects[2], day);
+      }
+
+      // Fallback: date input (if exists).
+      const dateInput = document.querySelector('input[type="date"]');
+      if (dateInput) {
+        dateInput.value = iso;
+        dispatch(dateInput);
+      }
+    },
+    { year: yearNum, month: monthNum, day: dayNum, iso: dateInfo.isoDate }
+  );
+}
+
+async function clickPowerAnalyzeQuery(page) {
+  if (await clickByText(page, "查詢")) {
+    return true;
+  }
+
+  const clicked = await page
+    .evaluate(() => {
+      const normalize = (value) => String(value ?? "").replace(/\s+/g, "").trim();
+      const candidates = Array.from(
+        document.querySelectorAll('button, input[type="button"], input[type="submit"], a')
+      );
+      for (const node of candidates) {
+        const text = normalize(node.textContent || node.getAttribute("value") || "");
+        if (!text.includes("查詢")) continue;
+        const style = window.getComputedStyle(node);
+        if (style.display === "none" || style.visibility === "hidden") continue;
+        const rect = node.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) continue;
+        node.click();
+        return true;
+      }
+      return false;
+    })
+    .catch(() => false);
+
+  return clicked;
+}
+
+async function pageHasPowerAnalyzeResult(page, initialText) {
+  const currentText = normalizeText(await page.locator("body").innerText().catch(() => ""));
+  const contentChanged = currentText !== initialText;
+
+  const hasLoadingText = /載入中|讀取中|處理中|loading/i.test(currentText);
+  if (hasLoadingText) {
+    return false;
+  }
+
+  const hasVisibleRows = await page
+    .evaluate(() => {
+      const tables = Array.from(document.querySelectorAll("table"));
+      const visibleTables = tables.filter((table) => {
+        const style = window.getComputedStyle(table);
+        if (style.display === "none" || style.visibility === "hidden") return false;
+        const rect = table.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      });
+
+      const rowCount = visibleTables.reduce(
+        (sum, table) => sum + table.querySelectorAll("tr").length,
+        0
+      );
+      return rowCount >= 3;
+    })
+    .catch(() => false);
+
+  const hasChartCanvas = await page
+    .evaluate(() => {
+      const nodes = Array.from(document.querySelectorAll("svg, canvas, .highcharts-container"));
+      return nodes.some((node) => {
+        const style = window.getComputedStyle(node);
+        if (style.display === "none" || style.visibility === "hidden") return false;
+        const rect = node.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      });
+    })
+    .catch(() => false);
+
+  if (hasVisibleRows || hasChartCanvas) {
+    return true;
+  }
+
+  return contentChanged && !hasLoadingText;
+}
+
+async function pageContainsPowerAnalyzeDate(page, isoDate) {
+  const slashDate = isoDate.replace(/-/g, "/");
+  const text = normalizeText(await page.locator("body").innerText().catch(() => ""));
+  return text.includes(isoDate) || text.includes(slashDate);
+}
+
+async function waitForPowerAnalyzeRendered(page, initialText, timeoutMs, expectedIsoDate = "") {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    await waitForPageSettled(page, 300);
+
+    if (await pageHasPowerAnalyzeResult(page, initialText)) {
+      if (expectedIsoDate) {
+        if (!(await pageContainsPowerAnalyzeDate(page, expectedIsoDate))) {
+          await page.waitForTimeout(800);
+          continue;
+        }
+      }
+      // Give client-side chart/table one more beat to stabilize.
+      await page.waitForTimeout(1200);
+      return true;
+    }
+
+    await page.waitForTimeout(1000);
+  }
+
+  log(
+    `PowerAnalyze result was not fully detected within ${Math.round(
+      timeoutMs / 1000
+    )} seconds. Continuing with current page state.`
+  );
+  return false;
+}
+
+async function waitForTabRendered(page, initialText, timeoutMs = GENERAL_RENDER_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    await waitForPageSettled(page, 250);
+    const currentText = normalizeText(await page.locator("body").innerText().catch(() => ""));
+    const hasLoadingText = /載入中|讀取中|處理中|loading/i.test(currentText);
+
+    if (!hasLoadingText && currentText !== initialText) {
+      await page.waitForTimeout(800);
+      return true;
+    }
+
+    await page.waitForTimeout(900);
+  }
+
+  log(
+    `Tab render was not fully detected within ${Math.round(
+      timeoutMs / 1000
+    )} seconds. Continuing with current page state.`
+  );
+  return false;
+}
+
+function rowsToRecordObjectsWithHeaders(headers, rows) {
+  const keys = headers.map((header, index) => normalizeRecordKey(header) || `col_${index + 1}`);
+  return rows.map((row) => Object.fromEntries(keys.map((key, index) => [key, row[index] || ""])));
+}
+
+async function extractVisibleTablesAsSections(page, defaultSection) {
+  const tables = await collectTables(page, { visibleOnly: true });
+  return tables
+    .map((table) => {
+      const sectionCandidate = normalizeText(table.rows?.[0]?.[0] || "");
+      const parsed = parseSectionedTable(table.rows, sectionCandidate || defaultSection);
+      if (parsed) return parsed;
+
+      const headers = table.headers.length ? table.headers : table.rows[0] || [];
+      let values = table.rows.slice(1);
+      if (headers.length && values.length && rowsContainSameValues(values[0], headers)) {
+        values = values.slice(1);
+      }
+      const records = rowsToRecordObjectsWithHeaders(headers, values);
+      if (!records.length) return null;
+      return { section: defaultSection, records };
+    })
+    .filter(Boolean);
+}
+
 async function openBasicTab(page, tabText) {
   const startUrl = page.url();
   const startText = await page.locator("body").innerText().catch(() => "");
@@ -1500,6 +1791,52 @@ function normalizeChartValues(data) {
     if (typeof point === "object") return toNumber(point.y);
     return toNumber(point);
   });
+}
+
+function pickPowerAnalyzeFifteenChart(rawCharts) {
+  const charts = Array.isArray(rawCharts) ? rawCharts.filter(Boolean) : [];
+  if (!charts.length) return null;
+
+  const byRenderTo = charts.filter((chart) =>
+    normalizeText(chart?.renderTo || "").toLowerCase() === "fifteenminutechart"
+  );
+  if (byRenderTo.length) {
+    return byRenderTo[byRenderTo.length - 1];
+  }
+
+  // Fallback: choose the chart with the largest x-axis categories.
+  return charts.reduce((best, current) => {
+    const bestCount = Array.isArray(best?.xAxisCategories) ? best.xAxisCategories.length : 0;
+    const currentCount = Array.isArray(current?.xAxisCategories) ? current.xAxisCategories.length : 0;
+    return currentCount >= bestCount ? current : best;
+  }, null);
+}
+
+function buildPowerAnalyzeSeriesData(rawCharts) {
+  const chart = pickPowerAnalyzeFifteenChart(rawCharts);
+  if (!chart) {
+    return { series: [] };
+  }
+
+  const xAxis = Array.isArray(chart.xAxisCategories)
+    ? chart.xAxisCategories.map((item) => String(item))
+    : [];
+
+  const series = (Array.isArray(chart.series) ? chart.series : []).map((item) => {
+    const values = normalizeChartValues(item.data || []);
+    const alignedValues = xAxis.map((_, index) => values[index] ?? null);
+    return {
+      category: item.name || "",
+      series_data: xAxis.map((time, index) => ({
+        time,
+        value: alignedValues[index],
+      })),
+    };
+  });
+
+  return {
+    series,
+  };
 }
 
 function pickLatestCycleCharts(rawCharts) {
@@ -2006,6 +2343,31 @@ async function main() {
         "流動電費",
         "總額",
       ]);
+
+      await writeArtifacts(targetPage, payload);
+
+      log(`Saved JSON: ${OUTPUT_PATH}`);
+      log(`Saved HTML snapshot: ${HTML_SNAPSHOT_PATH}`);
+      log(`Saved screenshot: ${SCREENSHOT_PATH}`);
+      return;
+    }
+
+    if (TARGET_PAGE === "power_analyze") {
+      await selectPowerAnalyzeYstdAndFifteenMin(targetPage);
+      const y = getYesterdayInfo();
+      const chartData = await collectCycleRawChartData(targetPage);
+      const organizedSeries = buildPowerAnalyzeSeriesData(chartData);
+      const payload = {
+        section: "需量分析",
+        granularity: FIFTEEN_MIN_TEXT,
+        target_date: {
+          gregorian: y.slashDate,
+          roc: y.rocDate,
+        },
+        page_url: targetPage.url(),
+        title: await targetPage.title().catch(() => ""),
+        series: organizedSeries.series,
+      };
 
       await writeArtifacts(targetPage, payload);
 

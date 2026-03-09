@@ -107,6 +107,12 @@ To open `用戶資訊 -> 用電紀錄`, extract only table data, and save as `ou
 npm run open:energy_usage
 ```
 
+To navigate to `需量分析 (PowerAnalyze)`, switch to `每15分鐘`, target yesterday data, and save as `output/power-analyze.*`:
+
+```bash
+npm run open:power-analyze
+```
+
 To run `用戶資料 + 用電紀錄 + 電費紀錄` in one shot and save:
 - `output/basic_all.json`
 

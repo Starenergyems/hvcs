@@ -10,6 +10,7 @@
     "basic:all": "HVCS_TARGET_PAGE=all node scripts/extract-dashboard.js",
     "open:basic": "HVCS_TARGET_PAGE=basic node scripts/extract-dashboard.js",
     "open:energy_usage": "HVCS_TARGET_PAGE=energy_usage node scripts/extract-dashboard.js",
+    "open:power-analyze": "HVCS_TARGET_PAGE=power_analyze node scripts/extract-dashboard.js",
     "open:price": "HVCS_TARGET_PAGE=price node scripts/extract-dashboard.js"
   },
   "dependencies": {
