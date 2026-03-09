@@ -113,6 +113,18 @@ To navigate to `需量分析 (PowerAnalyze)`, switch to `每15分鐘`, target ye
 npm run open:power-analyze
 ```
 
+To iterate a full month on `需量分析 (PowerAnalyze) -> 每15分鐘` and save all daily series into one file `output/power-analyze-month.json`:
+
+```bash
+npm run open:power-analyze-month
+```
+
+Optional target month (default is yesterday's month):
+
+```bash
+HVCS_POWER_ANALYZE_MONTH=2026-03 npm run open:power-analyze-month
+```
+
 To run `用戶資料 + 用電紀錄 + 電費紀錄` in one shot and save:
 - `output/basic_all.json`
 

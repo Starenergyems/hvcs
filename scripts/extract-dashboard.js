@@ -20,6 +20,8 @@ const TARGET_BASENAME =
     ? "cycle-page"
     : TARGET_PAGE === "all"
       ? "all"
+    : TARGET_PAGE === "power_analyze_month"
+      ? "power-analyze-month"
     : TARGET_PAGE === "power_analyze"
       ? "power-analyze"
     : TARGET_PAGE === "price"
@@ -274,7 +276,7 @@ async function pageLooksLikeTarget(page) {
   if (TARGET_PAGE === "cycle") {
     return pageLooksLikeCycle(page);
   }
-  if (TARGET_PAGE === "power_analyze") {
+  if (TARGET_PAGE === "power_analyze" || TARGET_PAGE === "power_analyze_month") {
     return pageLooksLikePowerAnalyze(page);
   }
   if (TARGET_PAGE === "all") {
@@ -791,7 +793,7 @@ async function navigateToTarget(context, page) {
     return page;
   }
 
-  if (TARGET_PAGE === "power_analyze") {
+  if (TARGET_PAGE === "power_analyze" || TARGET_PAGE === "power_analyze_month") {
     const startUrl = page.url();
     const startText = await page.locator("body").innerText().catch(() => "");
 
@@ -1522,28 +1524,80 @@ function getYesterdayInfo() {
   };
 }
 
-async function selectPowerAnalyzeYstdAndFifteenMin(page) {
-  const beforeFifteenText = normalizeText(await page.locator("body").innerText().catch(() => ""));
-  const clickedFifteen = await clickByText(page, FIFTEEN_MIN_TEXT);
-  if (clickedFifteen) {
-    await waitForPageSettled(page, 600);
-    await waitForPowerAnalyzeRendered(page, beforeFifteenText, GENERAL_RENDER_TIMEOUT_MS);
+function parseTargetMonth() {
+  const raw = normalizeText(process.env.HVCS_POWER_ANALYZE_MONTH || "");
+  const match = raw.match(/^(\d{4})[-/](\d{1,2})$/);
+  if (match) {
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    if (year >= 2000 && year <= 3000 && month >= 1 && month <= 12) {
+      return { year, month };
+    }
   }
 
-  const y = getYesterdayInfo();
-  const beforeQueryText = normalizeText(await page.locator("body").innerText().catch(() => ""));
+  const ystd = getYesterdayInfo().isoDate;
+  return {
+    year: Number(ystd.slice(0, 4)),
+    month: Number(ystd.slice(5, 7)),
+  };
+}
 
-  await setPowerAnalyzeDate(page, y).catch(() => {});
+function buildDateInfo(year, month, day) {
+  const yyyy = String(year).padStart(4, "0");
+  const mm = String(month).padStart(2, "0");
+  const dd = String(day).padStart(2, "0");
+  const isoDate = `${yyyy}-${mm}-${dd}`;
+  const slashDate = `${yyyy}/${mm}/${dd}`;
+  const rocDate = `${year - 1911}/${mm}/${dd}`;
+  return { isoDate, slashDate, rocDate };
+}
+
+function listMonthDates(year, month) {
+  const count = new Date(year, month, 0).getDate();
+  const result = [];
+  const yesterday = new Date();
+  yesterday.setHours(0, 0, 0, 0);
+  yesterday.setDate(yesterday.getDate() - 1);
+
+  for (let day = 1; day <= count; day += 1) {
+    const candidate = new Date(year, month - 1, day);
+    candidate.setHours(0, 0, 0, 0);
+    if (candidate.getTime() > yesterday.getTime()) {
+      break;
+    }
+    result.push(buildDateInfo(year, month, day));
+  }
+  return result;
+}
+
+async function ensurePowerAnalyzeFifteenMin(page) {
+  const beforeFifteenText = normalizeText(await page.locator("body").innerText().catch(() => ""));
+  const clickedFifteen = await clickByText(page, FIFTEEN_MIN_TEXT);
+  if (!clickedFifteen) {
+    return false;
+  }
+  await waitForPageSettled(page, 600);
+  return waitForPowerAnalyzeRendered(page, beforeFifteenText, GENERAL_RENDER_TIMEOUT_MS);
+}
+
+async function runPowerAnalyzeQueryByDate(page, dateInfo) {
+  const beforeQueryText = normalizeText(await page.locator("body").innerText().catch(() => ""));
+  await setPowerAnalyzeDate(page, dateInfo).catch(() => {});
   await waitForPageSettled(page, 400);
   await clickPowerAnalyzeQuery(page).catch(() => {});
   await waitForPageSettled(page, 700);
-  const rendered = await waitForPowerAnalyzeRendered(
+  return waitForPowerAnalyzeRendered(
     page,
     beforeQueryText,
     GENERAL_RENDER_TIMEOUT_MS,
-    y.isoDate
+    dateInfo.isoDate
   );
-  return rendered;
+}
+
+async function selectPowerAnalyzeYstdAndFifteenMin(page) {
+  await ensurePowerAnalyzeFifteenMin(page);
+  const y = getYesterdayInfo();
+  return runPowerAnalyzeQueryByDate(page, y);
 }
 
 async function setPowerAnalyzeDate(page, dateInfo) {
@@ -2370,6 +2424,49 @@ async function main() {
         page_url: targetPage.url(),
         title: await targetPage.title().catch(() => ""),
         series: organizedSeries.series,
+      };
+
+      await writeArtifacts(targetPage, payload);
+
+      log(`Saved JSON: ${OUTPUT_PATH}`);
+      log(`Saved HTML snapshot: ${HTML_SNAPSHOT_PATH}`);
+      log(`Saved screenshot: ${SCREENSHOT_PATH}`);
+      return;
+    }
+
+    if (TARGET_PAGE === "power_analyze_month") {
+      await ensurePowerAnalyzeFifteenMin(targetPage);
+
+      const targetMonth = parseTargetMonth();
+      const monthDates = listMonthDates(targetMonth.year, targetMonth.month);
+      const daily = [];
+
+      for (const dateInfo of monthDates) {
+        log(`Querying PowerAnalyze: ${dateInfo.slashDate}`);
+        const rendered = await runPowerAnalyzeQueryByDate(targetPage, dateInfo);
+        const chartData = rendered ? await collectCycleRawChartData(targetPage) : [];
+        const organizedSeries = rendered
+          ? buildPowerAnalyzeSeriesData(chartData)
+          : { series: [] };
+        daily.push({
+          target_date: {
+            gregorian: dateInfo.slashDate,
+            roc: dateInfo.rocDate,
+          },
+          series: organizedSeries.series,
+        });
+      }
+
+      const payload = {
+        section: "需量分析",
+        granularity: FIFTEEN_MIN_TEXT,
+        target_month: {
+          gregorian: `${targetMonth.year}/${String(targetMonth.month).padStart(2, "0")}`,
+          roc: `${targetMonth.year - 1911}/${String(targetMonth.month).padStart(2, "0")}`,
+        },
+        page_url: targetPage.url(),
+        title: await targetPage.title().catch(() => ""),
+        daily,
       };
 
       await writeArtifacts(targetPage, payload);
