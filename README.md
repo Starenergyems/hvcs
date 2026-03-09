@@ -77,6 +77,49 @@ If your account has multiple `電號`, you can target one explicitly:
 HVCS_ELECTRIC_NUMBER='your-electric-number' npm run extract:dashboard
 ```
 
+To land on `不同期間電費比較` instead of the dashboard:
+
+```bash
+HVCS_ELECTRIC_NUMBER='your-electric-number' npm run open:cycle
+```
+
+To land on `https://service.taipower.com.tw/hvcs/Customer/Module/Basic` (`用戶資訊`):
+
+```bash
+HVCS_ELECTRIC_NUMBER='your-electric-number' npm run open:basic
+```
+
+To open `用戶資訊 -> 電費紀錄`, extract the page data, and save as `output/price.*`:
+
+```bash
+npm run open:price
+```
+
+To open `用戶資訊 -> 用戶資料`, extract only table data, and save as `output/basic.*`:
+
+```bash
+npm run open:basic
+```
+
+To open `用戶資訊 -> 用電紀錄`, extract only table data, and save as `output/energy_usage.*`:
+
+```bash
+npm run open:energy_usage
+```
+
+To run `用戶資料 + 用電紀錄 + 電費紀錄` in one shot and save:
+- `output/basic_all.json`
+
+```bash
+npm run basic:all
+```
+
+To inspect navigation behavior manually (dashboard -> cycle) and save request/response trace metadata:
+
+```bash
+HVCS_MANUAL_TO_CYCLE=1 HVCS_ELECTRIC_NUMBER='your-electric-number' npm run open:cycle
+```
+
 If `HVCS_ELECTRIC_NUMBER` is blank, the script pauses on the `用電管理` flow and waits for you to click the desired `電號` in the browser. It now detects the context switch automatically and continues on its own; terminal confirmation is only used as a timeout fallback.
 
 Artifacts are written to:
@@ -85,10 +128,7 @@ Artifacts are written to:
 - `output/today-dashboard.cleaned.json`
 - `output/today-dashboard.html`
 - `output/today-dashboard.png`
-- `output/landing-page.html`
-- `output/landing-page.txt`
-- `output/landing-page.png`
-- `output/landing-page.json`
+- `output/cycle-navigation-requests.json` (only when `HVCS_MANUAL_TO_CYCLE=1`)
 
 The script reuses the persistent browser profile in `.auth/browser-profile`, navigates by menu text, and extracts:
 
@@ -98,6 +138,5 @@ The script reuses the persistent browser profile in `.auth/browser-profile`, nav
 
 If the session is no longer authenticated, the script opens the real login page, waits for you to complete captcha/login, saves the refreshed session to `.auth/storage-state.json`, and continues in the same browser context.
 It now detects successful login automatically; terminal confirmation is only used as a timeout fallback if the page does not transition cleanly.
-Right after successful login, it also captures the first landing page so the real post-login DOM can be inspected when menu selectors need adjustment.
 
 If the site layout changes and a menu item cannot be found, the script pauses and lets you navigate manually in the browser, then continues extracting from the page you reached.

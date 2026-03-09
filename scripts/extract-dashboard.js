@@ -8,25 +8,36 @@ const BASE_URL = "https://service.taipower.com.tw/hvcs/";
 const LOGIN_PATH_FRAGMENT = "/Account/NewLogon";
 const UID_METER_LIST_PATH = "/hvcs/Customer/Module/UIDMeterNoList";
 const CYCLE_PATH = "/hvcs/Customer/Module/Cycle";
+const BASIC_PATH = "/hvcs/Customer/Module/Basic";
 const AUTH_DIR = path.resolve(__dirname, "..", ".auth");
 const USER_DATA_DIR = path.join(AUTH_DIR, "browser-profile");
 const STORAGE_STATE_PATH = path.join(AUTH_DIR, "storage-state.json");
 const OUTPUT_DIR = path.resolve(__dirname, "..", "output");
 const TARGET_PAGE = (process.env.HVCS_TARGET_PAGE || "dashboard").trim().toLowerCase();
-const TARGET_BASENAME = TARGET_PAGE === "cycle" ? "cycle-page" : "today-dashboard";
+const TARGET_BASENAME =
+  TARGET_PAGE === "cycle"
+    ? "cycle-page"
+    : TARGET_PAGE === "all"
+      ? "all"
+    : TARGET_PAGE === "price"
+      ? "price"
+      : TARGET_PAGE === "energy_usage"
+        ? "energy_usage"
+    : TARGET_PAGE === "basic"
+      ? "basic"
+      : "today-dashboard";
 const OUTPUT_PATH = path.join(OUTPUT_DIR, `${TARGET_BASENAME}.json`);
 const CLEAN_OUTPUT_PATH = path.join(OUTPUT_DIR, `${TARGET_BASENAME}.cleaned.json`);
 const HTML_SNAPSHOT_PATH = path.join(OUTPUT_DIR, `${TARGET_BASENAME}.html`);
 const SCREENSHOT_PATH = path.join(OUTPUT_DIR, `${TARGET_BASENAME}.png`);
-const LANDING_HTML_PATH = path.join(OUTPUT_DIR, "landing-page.html");
-const LANDING_SCREENSHOT_PATH = path.join(OUTPUT_DIR, "landing-page.png");
-const LANDING_TEXT_PATH = path.join(OUTPUT_DIR, "landing-page.txt");
-const LANDING_META_PATH = path.join(OUTPUT_DIR, "landing-page.json");
 const CYCLE_NAV_TRACE_PATH = path.join(OUTPUT_DIR, "cycle-navigation-requests.json");
 const CANDIDATE_SUCCESS_TEXT = ["登出", "登    出", "會員專區", "用電資料查詢"];
 const DASHBOARD_TEXT = "本日用電儀表板";
 const CYCLE_TEXT = "不同期間電費比較";
 const USER_INFO_TEXT = "用戶資訊";
+const USER_PROFILE_TEXT = "用戶資料";
+const ENERGY_USAGE_TEXT = "用電紀錄";
+const PRICE_RECORD_TEXT = "電費紀錄";
 const AUTH_TIMEOUT_MS = Number(process.env.HVCS_AUTH_TIMEOUT_MS || 180000);
 const ELECTRIC_SELECTION_TIMEOUT_MS = Number(process.env.HVCS_ELECTRIC_SELECTION_TIMEOUT_MS || 120000);
 const DASHBOARD_LOAD_TIMEOUT_MS = Number(process.env.HVCS_DASHBOARD_TIMEOUT_MS || 120000);
@@ -228,12 +239,91 @@ async function pageLooksLikeCycle(page) {
   return false;
 }
 
+async function pageLooksLikeBasic(page) {
+  if (page.url().includes(BASIC_PATH)) {
+    return true;
+  }
+
+  const title = normalizeText(await page.title().catch(() => ""));
+  if (title.includes("用戶資訊")) {
+    return true;
+  }
+
+  const basicSignals = [
+    page.getByText("帳號", { exact: false }).first(),
+    page.getByText("電號", { exact: false }).first(),
+    page.getByText("用戶資訊", { exact: false }).first(),
+  ];
+
+  for (const locator of basicSignals) {
+    if ((await locator.count().catch(() => 0)) > 0 && (await locator.isVisible().catch(() => false))) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 async function pageLooksLikeTarget(page) {
   if (TARGET_PAGE === "cycle") {
     return pageLooksLikeCycle(page);
   }
+  if (TARGET_PAGE === "all") {
+    return pageLooksLikeBasic(page);
+  }
+  if (TARGET_PAGE === "energy_usage") {
+    return pageLooksLikeEnergyUsage(page);
+  }
+  if (TARGET_PAGE === "price") {
+    return pageLooksLikePrice(page);
+  }
+  if (TARGET_PAGE === "basic") {
+    return pageLooksLikeBasic(page);
+  }
 
   return pageLooksLikeDashboard(page);
+}
+
+async function pageLooksLikePrice(page) {
+  if (!page.url().includes(BASIC_PATH)) {
+    return false;
+  }
+
+  const billingSignals = [
+    page.getByText(PRICE_RECORD_TEXT, { exact: false }).first(),
+    page.getByText("應繳", { exact: false }).first(),
+    page.getByText("繳費", { exact: false }).first(),
+  ];
+
+  for (const locator of billingSignals) {
+    if ((await locator.count().catch(() => 0)) > 0 && (await locator.isVisible().catch(() => false))) {
+      return true;
+    }
+  }
+
+  const rows = page.locator("table tr");
+  return (await rows.count().catch(() => 0)) > 1;
+}
+
+async function pageLooksLikeEnergyUsage(page) {
+  if (!page.url().includes(BASIC_PATH)) {
+    return false;
+  }
+
+  const usageSignals = [
+    page.getByText(ENERGY_USAGE_TEXT, { exact: false }).first(),
+    page.getByText("用電", { exact: false }).first(),
+    page.getByText("度", { exact: false }).first(),
+  ];
+
+  for (const locator of usageSignals) {
+    if ((await locator.count().catch(() => 0)) > 0 && (await locator.isVisible().catch(() => false))) {
+      return true;
+    }
+  }
+
+  const rows = page.locator("table tr");
+  return (await rows.count().catch(() => 0)) > 1;
 }
 
 async function promptForManualNavigation(page, targetDescription) {
@@ -381,28 +471,6 @@ async function saveState(context, page) {
   await context.storageState({ path: STORAGE_STATE_PATH });
 }
 
-async function saveLandingSnapshot(page, reason) {
-  fs.mkdirSync(OUTPUT_DIR, { recursive: true });
-
-  const text = await page.locator("body").innerText().catch(() => "");
-  const payload = {
-    capturedAt: new Date().toISOString(),
-    reason,
-    url: page.url(),
-    title: await page.title().catch(() => ""),
-  };
-
-  fs.writeFileSync(LANDING_HTML_PATH, await page.content(), "utf8");
-  fs.writeFileSync(LANDING_TEXT_PATH, text, "utf8");
-  fs.writeFileSync(LANDING_META_PATH, JSON.stringify(payload, null, 2));
-  await page.screenshot({ path: LANDING_SCREENSHOT_PATH, fullPage: true });
-
-  log(`Saved landing HTML: ${LANDING_HTML_PATH}`);
-  log(`Saved landing text: ${LANDING_TEXT_PATH}`);
-  log(`Saved landing screenshot: ${LANDING_SCREENSHOT_PATH}`);
-  log(`Saved landing metadata: ${LANDING_META_PATH}`);
-}
-
 async function waitForAuthenticationTransition(context, initialPage, timeoutMs = AUTH_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs;
   let page = initialPage;
@@ -524,7 +592,6 @@ async function ensureAuthenticated(context, page) {
 
   await saveState(context, page);
   log(`Updated saved session at ${STORAGE_STATE_PATH}`);
-  await saveLandingSnapshot(page, "post-login");
   return page;
 }
 
@@ -645,11 +712,9 @@ async function navigateToTarget(context, page) {
   await waitForPageSettled(page);
   log(`Opened: ${UID_METER_LIST_PATH}`);
 
-  await saveLandingSnapshot(page, "after-用電管理");
-
   page = await chooseElectricNumber(context, page);
 
-  if (TARGET_PAGE !== "cycle" && (await pageLooksLikeTarget(page))) {
+  if (TARGET_PAGE === "dashboard" && (await pageLooksLikeTarget(page))) {
     return page;
   }
 
@@ -704,6 +769,91 @@ async function navigateToTarget(context, page) {
     return page;
   }
 
+  if (TARGET_PAGE === "basic") {
+    const startUrl = page.url();
+    const startText = await page.locator("body").innerText().catch(() => "");
+
+    await page.goto(`https://service.taipower.com.tw${BASIC_PATH}`, {
+      waitUntil: "domcontentloaded",
+    });
+    await waitForPageSettled(page);
+
+    const basicPage = await waitForTargetTransition(context, page, startUrl, startText);
+    if (basicPage) {
+      page = basicPage;
+    }
+
+    const profileStartUrl = page.url();
+    const profileStartText = await page.locator("body").innerText().catch(() => "");
+    if (!(await clickByText(page, USER_PROFILE_TEXT))) {
+      await promptForManualNavigation(page, `\`${USER_PROFILE_TEXT}\``);
+      return page;
+    }
+
+    const profilePage = await waitForTargetTransition(context, page, profileStartUrl, profileStartText);
+    return profilePage || page;
+  }
+
+  if (TARGET_PAGE === "all") {
+    await page.goto(`https://service.taipower.com.tw${BASIC_PATH}`, {
+      waitUntil: "domcontentloaded",
+    });
+    await waitForPageSettled(page);
+    return page;
+  }
+
+  if (TARGET_PAGE === "energy_usage") {
+    await page.goto(`https://service.taipower.com.tw${BASIC_PATH}`, {
+      waitUntil: "domcontentloaded",
+    });
+    await waitForPageSettled(page);
+
+    const startUrl = page.url();
+    const startText = await page.locator("body").innerText().catch(() => "");
+
+    if (!(await clickByText(page, ENERGY_USAGE_TEXT))) {
+      await promptForManualNavigation(page, `\`${ENERGY_USAGE_TEXT}\``);
+      return page;
+    }
+
+    const usagePage = await waitForTargetTransition(context, page, startUrl, startText);
+    if (usagePage) {
+      return usagePage;
+    }
+
+    await promptForManualNavigation(page, `\`${ENERGY_USAGE_TEXT}\``);
+    return page;
+  }
+
+  if (TARGET_PAGE === "price") {
+    const basicStartUrl = page.url();
+    const basicStartText = await page.locator("body").innerText().catch(() => "");
+
+    await page.goto(`https://service.taipower.com.tw${BASIC_PATH}`, {
+      waitUntil: "domcontentloaded",
+    });
+    await waitForPageSettled(page);
+
+    const basicPage = await waitForTargetTransition(context, page, basicStartUrl, basicStartText);
+    page = basicPage || page;
+
+    const startUrl = page.url();
+    const startText = await page.locator("body").innerText().catch(() => "");
+
+    if (!(await clickByText(page, PRICE_RECORD_TEXT))) {
+      await promptForManualNavigation(page, `\`${PRICE_RECORD_TEXT}\``);
+      return page;
+    }
+
+    const pricePage = await waitForTargetTransition(context, page, startUrl, startText);
+    if (pricePage) {
+      return pricePage;
+    }
+
+    await promptForManualNavigation(page, `\`${PRICE_RECORD_TEXT}\``);
+    return page;
+  }
+
   const startUrl = page.url();
   const startText = await page.locator("body").innerText().catch(() => "");
 
@@ -717,32 +867,101 @@ async function navigateToTarget(context, page) {
   return page;
 }
 
-async function collectTables(page) {
-  return page.$$eval("table", (tables) =>
-    tables
-      .map((table, index) => {
-        const headers = Array.from(table.querySelectorAll("th")).map((cell) =>
-          (cell.textContent || "").replace(/\s+/g, " ").trim()
-        );
-        const rows = Array.from(table.querySelectorAll("tr"))
-          .map((row) =>
-            Array.from(row.querySelectorAll("th, td")).map((cell) =>
-              (cell.textContent || "").replace(/\s+/g, " ").trim()
-            )
-          )
-          .filter((row) => row.some(Boolean));
-
-        if (!rows.length) {
-          return null;
+async function collectTables(page, options = {}) {
+  const { visibleOnly = false } = options;
+  return page.$$eval(
+    "table",
+    (tables, runtimeOptions) => {
+      const normalize = (value) => (value || "").replace(/\s+/g, " ").trim();
+      const shouldCheckVisibility = Boolean(runtimeOptions?.visibleOnly);
+      const isVisible = (element) => {
+        const style = window.getComputedStyle(element);
+        if (style.display === "none" || style.visibility === "hidden") {
+          return false;
         }
 
-        return {
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      };
+
+      const buildExpandedRows = (table) => {
+        const trNodes = Array.from(table.querySelectorAll("tr"));
+        const grid = [];
+
+        for (let rowIndex = 0; rowIndex < trNodes.length; rowIndex += 1) {
+          if (!grid[rowIndex]) {
+            grid[rowIndex] = [];
+          }
+
+          const row = grid[rowIndex];
+          let colIndex = 0;
+          while (row[colIndex] !== undefined) {
+            colIndex += 1;
+          }
+
+          const cells = Array.from(trNodes[rowIndex].querySelectorAll("th, td"));
+          for (const cell of cells) {
+            while (row[colIndex] !== undefined) {
+              colIndex += 1;
+            }
+
+            const text = normalize(cell.textContent || "");
+            const rowSpan = Math.max(1, Number(cell.getAttribute("rowspan")) || 1);
+            const colSpan = Math.max(1, Number(cell.getAttribute("colspan")) || 1);
+
+            for (let r = 0; r < rowSpan; r += 1) {
+              const targetRowIndex = rowIndex + r;
+              if (!grid[targetRowIndex]) {
+                grid[targetRowIndex] = [];
+              }
+              for (let c = 0; c < colSpan; c += 1) {
+                // Keep the value in the first spanned column only.
+                // Additional colspan columns are structural placeholders.
+                grid[targetRowIndex][colIndex + c] = c === 0 ? text : "";
+              }
+            }
+
+            colIndex += colSpan;
+          }
+        }
+
+        const width = grid.reduce((max, row) => Math.max(max, row.length), 0);
+        return grid
+          .map((row) => {
+            const cells = [];
+            for (let index = 0; index < width; index += 1) {
+              cells.push(normalize(row[index] || ""));
+            }
+            return cells;
+          })
+          .filter((row) => row.some(Boolean));
+      };
+
+      const result = [];
+      for (let index = 0; index < tables.length; index += 1) {
+        const table = tables[index];
+        if (shouldCheckVisibility && !isVisible(table)) {
+          continue;
+        }
+
+        const rows = buildExpandedRows(table);
+
+        if (!rows.length) {
+          continue;
+        }
+
+        const headers = rows[0] || [];
+
+        result.push({
           index,
           headers,
           rows,
-        };
-      })
-      .filter(Boolean)
+        });
+      }
+
+      return result;
+    },
+    { visibleOnly }
   );
 }
 
@@ -874,6 +1093,402 @@ async function collectCycleRawChartData(page) {
       return charts;
     })
     .catch(() => []);
+}
+
+function rowsContainSameValues(left, right) {
+  if (!Array.isArray(left) || !Array.isArray(right)) return false;
+  if (left.length !== right.length) return false;
+  return left.every((value, index) => normalizeText(value) === normalizeText(right[index]));
+}
+
+function rowsToRecordObjects(headers, rows) {
+  const normalizedHeaders = [];
+  const seen = new Map();
+
+  for (let index = 0; index < headers.length; index += 1) {
+    const header = headers[index];
+    let key = normalizeRecordKey(header);
+    if (!key) {
+      key = `col_${index + 1}`;
+    }
+
+    const used = seen.get(key) || 0;
+    seen.set(key, used + 1);
+    normalizedHeaders.push(used === 0 ? key : `${key}_${used + 1}`);
+  }
+
+  return rows.map((row) =>
+    Object.fromEntries(normalizedHeaders.map((key, index) => [key, row[index] || ""]))
+  );
+}
+
+function normalizeRecordKey(header) {
+  const text = normalizeText(header);
+  if (!text) return "";
+
+  const compact = text.replace(/\s+/g, "").toLowerCase();
+
+  if (compact.includes("co2排放量") && compact.includes("kg")) {
+    return "co2排放量_kg";
+  }
+  if (compact.includes("基本電費") && compact.includes("約定")) {
+    return "基本電費_約定";
+  }
+  if (compact.includes("基本電費") && compact.includes("非約定")) {
+    return "基本電費_非約定";
+  }
+  if (compact.includes("加減收項金額")) {
+    return "加減收項金額_備註";
+  }
+
+  return text
+    .replace(/[()（）]/g, "_")
+    .replace(/[\/\\]/g, "_")
+    .replace(/\s+/g, "")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function normalizeTableRows(rawRows) {
+  return (rawRows || [])
+    .map((row) => row.map((cell) => normalizeText(cell)))
+    .filter((row) => row.some(Boolean));
+}
+
+function parseSectionedTable(rawRows, fallbackSection) {
+  const rows = normalizeTableRows(rawRows);
+  if (!rows.length) {
+    return null;
+  }
+
+  let section = fallbackSection || "";
+  let dataRows = rows;
+
+  if (rows[0].length === 1 && rows[0][0]) {
+    section = rows[0][0];
+    dataRows = rows.slice(1);
+  }
+
+  if (!dataRows.length) {
+    return null;
+  }
+
+  const headers = dataRows[0] || [];
+  let values = dataRows.slice(1);
+
+  if (!headers.length) {
+    return null;
+  }
+
+  if (values.length && rowsContainSameValues(values[0], headers)) {
+    values = values.slice(1);
+  }
+
+  const records = rowsToRecordObjects(headers, values);
+  if (!records.length) {
+    return null;
+  }
+
+  return {
+    section: section || fallbackSection || "",
+    records,
+  };
+}
+
+function parseBasicInfoKeyValueTable(rawRows) {
+  const rows = normalizeTableRows(rawRows);
+  if (!rows.length) {
+    return null;
+  }
+
+  // Skip section-title row when present (single-cell "基本資料")
+  const dataRows =
+    rows[0].length === 1 && normalizeText(rows[0][0]).includes("基本資料")
+      ? rows.slice(1)
+      : rows;
+
+  const record = {};
+  for (const row of dataRows) {
+    for (let index = 0; index < row.length; index += 2) {
+      const key = normalizeText(row[index] || "");
+      if (!key) continue;
+      const value = normalizeText(row[index + 1] || "");
+      record[normalizeRecordKey(key) || key] = value;
+    }
+  }
+
+  if (!Object.keys(record).length) {
+    return null;
+  }
+
+  return {
+    section: "基本資料",
+    records: [record],
+  };
+}
+
+function pickBasicSectionName(tableText) {
+  if (tableText.includes("基本資料") || tableText.includes("用電地址")) {
+    return "基本資料";
+  }
+  if (tableText.includes("設備容量") || (tableText.includes("電力") && tableText.includes("電熱"))) {
+    return "設備容量";
+  }
+  if (tableText.includes("契約容量") || tableText.includes("經常契約容量")) {
+    return "契約容量";
+  }
+  return "";
+}
+
+function isBackupLabelValue(value) {
+  return normalizeText(value).includes("備用");
+}
+
+function isKwValue(value) {
+  const text = normalizeText(value);
+  return /kW$/i.test(text) || /^-?\d[\d,]*(\.\d+)?$/.test(text);
+}
+
+function mergeContractCapacityRecords(records) {
+  const result = [];
+
+  for (let index = 0; index < records.length; index += 1) {
+    const current = records[index];
+    const next = records[index + 1];
+
+    if (!current || !next) {
+      result.push(current);
+      continue;
+    }
+
+    const keys = Object.keys(current);
+    const currentLooksLikeBackupLabels =
+      keys.length > 0 &&
+      keys.every((key) => isBackupLabelValue(current[key] || ""));
+
+    const nextLooksLikeKwValues =
+      keys.length > 0 &&
+      keys.every((key) => isKwValue(next[key] || ""));
+
+    if (currentLooksLikeBackupLabels && nextLooksLikeKwValues) {
+      const merged = {};
+      for (const key of keys) {
+        const mergedKey = normalizeRecordKey(current[key] || "") || normalizeRecordKey(key) || key;
+        merged[mergedKey] = next[key] || "";
+      }
+      result.push(merged);
+      index += 1;
+      continue;
+    }
+
+    result.push(current);
+  }
+
+  return result.filter(Boolean);
+}
+
+function normalizeBasicSections(sections) {
+  return (sections || []).map((section) => {
+    if ((section?.section || "") !== "契約容量") {
+      return section;
+    }
+
+    return {
+      ...section,
+      records: mergeContractCapacityRecords(Array.isArray(section.records) ? section.records : []),
+    };
+  });
+}
+
+async function extractBasicSections(page) {
+  const tables = await collectTables(page, { visibleOnly: true });
+  if (!tables.length) {
+    return [];
+  }
+
+  const sections = tables
+    .map((table) => {
+      const tableText = normalizeText([...(table.headers || []), ...table.rows.flat()].join(" "));
+      const section = pickBasicSectionName(tableText);
+      if (!section) return null;
+      if (section === "基本資料") {
+        return parseBasicInfoKeyValueTable(table.rows);
+      }
+      return parseSectionedTable(table.rows, section);
+    })
+    .filter(Boolean);
+
+  return normalizeBasicSections(sections);
+}
+
+async function extractSingleSectionTableByHints(page, sectionName, hints = []) {
+  const tables = await collectTables(page, { visibleOnly: true });
+  if (!tables.length) {
+    return [];
+  }
+
+  const normalizedHints = hints.map((hint) => normalizeText(hint));
+  const scored = tables
+    .map((table) => {
+      if (!table.rows.length) return null;
+      const text = normalizeText([...(table.headers || []), ...table.rows.flat()].join(" "));
+      const score = normalizedHints.length
+        ? normalizedHints.reduce((sum, hint) => sum + (text.includes(hint) ? 1 : 0), 0)
+        : 1;
+      if (score === 0) return null;
+      return { table, score };
+    })
+    .filter(Boolean);
+
+  if (!scored.length) {
+    return [];
+  }
+
+  scored.sort((left, right) => {
+    if (right.score !== left.score) {
+      return right.score - left.score;
+    }
+    return (right.table.rows?.length || 0) - (left.table.rows?.length || 0);
+  });
+
+  const parsed = scored
+    .map((item) => parseSectionedTable(item.table.rows, sectionName))
+    .filter(Boolean);
+
+  if (!parsed.length) {
+    return [];
+  }
+
+  parsed.sort((a, b) => (b.records?.length || 0) - (a.records?.length || 0));
+  return [parsed[0]];
+}
+
+function isMonthLabel(value) {
+  return /^\d{1,2}月$/.test(normalizeText(value));
+}
+
+function looksLikeBillingPeriod(value) {
+  const text = normalizeText(value);
+  return text.includes("~") || /\d{2,3}\/\d{1,2}\/\d{1,2}/.test(text);
+}
+
+function inferEnergyItemLabel(row) {
+  const candidateItem = normalizeText(row["項目"]);
+  if (candidateItem && !/^\d[\d,]*(\.\d+)?$/.test(candidateItem)) {
+    return candidateItem;
+  }
+
+  const monthCol = normalizeText(row["電費月份"]);
+  if (/用電度數|轉供度數|最高需量/.test(monthCol)) {
+    return monthCol;
+  }
+
+  return candidateItem || monthCol || "項目";
+}
+
+function aggregateEnergyUsageSections(sections) {
+  return (sections || []).map((section) => {
+    const records = Array.isArray(section.records) ? section.records : [];
+    const byMonth = new Map();
+    let currentMonth = "";
+    let summary = null;
+
+    for (const row of records) {
+      const monthCol = normalizeText(row["電費月份"]);
+      const periodCol = normalizeText(row["計費期間"]);
+
+      if (isMonthLabel(monthCol)) {
+        currentMonth = monthCol;
+      }
+
+      if (!currentMonth) {
+        if (periodCol.includes("合計")) {
+          summary = {
+            label: periodCol,
+            尖峰: row["尖峰"] || "",
+            半尖峰: row["半尖峰"] || "",
+            週六半尖峰: row["週六半尖峰"] || "",
+            離峰: row["離峰"] || "",
+            co2排放量_kg: row["co2排放量_kg"] || "",
+          };
+        }
+        continue;
+      }
+
+      if (!byMonth.has(currentMonth)) {
+        byMonth.set(currentMonth, {
+          電費月份: currentMonth,
+          計費期間: looksLikeBillingPeriod(periodCol) ? periodCol : "",
+          co2排放量_kg: "",
+          明細: [],
+        });
+      }
+
+      const bucket = byMonth.get(currentMonth);
+      if (!bucket["計費期間"] && looksLikeBillingPeriod(periodCol)) {
+        bucket["計費期間"] = periodCol;
+      }
+      if (!bucket["co2排放量_kg"] && normalizeText(row["co2排放量_kg"])) {
+        bucket["co2排放量_kg"] = normalizeText(row["co2排放量_kg"]);
+      }
+
+      const detail = {
+        項目: inferEnergyItemLabel(row),
+        尖峰: row["尖峰"] || "",
+        半尖峰: row["半尖峰"] || "",
+        週六半尖峰: row["週六半尖峰"] || "",
+        離峰: row["離峰"] || "",
+      };
+
+      if (row["項目"] && /^\d[\d,]*(\.\d+)?$/.test(normalizeText(row["項目"]))) {
+        detail["總計"] = row["項目"];
+      }
+
+      bucket["明細"].push(detail);
+    }
+
+    const aggregated = {
+      section: section.section || "用電紀錄",
+      records: Array.from(byMonth.values()),
+    };
+
+    if (summary) {
+      aggregated.summary = summary;
+    }
+
+    return aggregated;
+  });
+}
+
+async function openBasicTab(page, tabText) {
+  const startUrl = page.url();
+  const startText = await page.locator("body").innerText().catch(() => "");
+
+  if (!(await clickByText(page, tabText))) {
+    await promptForManualNavigation(page, `\`${tabText}\``);
+    return page;
+  }
+
+  await waitForPageSettled(page);
+
+  if (page.url() !== startUrl) {
+    return page;
+  }
+
+  const currentText = await page.locator("body").innerText().catch(() => "");
+  if (normalizeText(currentText) !== normalizeText(startText)) {
+    return page;
+  }
+
+  await page.waitForTimeout(1200);
+  return page;
+}
+
+function writeOutputJson(fileName, payload) {
+  fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+  const outputPath = path.join(OUTPUT_DIR, fileName);
+  fs.writeFileSync(outputPath, JSON.stringify(payload, null, 2));
+  return outputPath;
 }
 
 function normalizeChartValues(data) {
@@ -1384,13 +1999,92 @@ async function main() {
       return;
     }
 
+    if (TARGET_PAGE === "price") {
+      const payload = await extractSingleSectionTableByHints(targetPage, "電費紀錄", [
+        "電費月份",
+        "基本電費",
+        "流動電費",
+        "總額",
+      ]);
+
+      await writeArtifacts(targetPage, payload);
+
+      log(`Saved JSON: ${OUTPUT_PATH}`);
+      log(`Saved HTML snapshot: ${HTML_SNAPSHOT_PATH}`);
+      log(`Saved screenshot: ${SCREENSHOT_PATH}`);
+      return;
+    }
+
+    if (TARGET_PAGE === "basic") {
+      const payload = await extractBasicSections(targetPage);
+
+      await writeArtifacts(targetPage, payload);
+
+      log(`Saved JSON: ${OUTPUT_PATH}`);
+      log(`Saved HTML snapshot: ${HTML_SNAPSHOT_PATH}`);
+      log(`Saved screenshot: ${SCREENSHOT_PATH}`);
+      return;
+    }
+
+    if (TARGET_PAGE === "energy_usage") {
+      const extracted = await extractSingleSectionTableByHints(targetPage, "用電紀錄", [
+        "電費月份",
+        "最高需量",
+        "用電",
+        "尖峰",
+        "半尖峰",
+        "離峰",
+      ]);
+      const payload = aggregateEnergyUsageSections(extracted);
+
+      await writeArtifacts(targetPage, payload);
+
+      log(`Saved JSON: ${OUTPUT_PATH}`);
+      log(`Saved HTML snapshot: ${HTML_SNAPSHOT_PATH}`);
+      log(`Saved screenshot: ${SCREENSHOT_PATH}`);
+      return;
+    }
+
+    if (TARGET_PAGE === "all") {
+      await openBasicTab(targetPage, USER_PROFILE_TEXT);
+      const basicTables = await extractBasicSections(targetPage);
+
+      await openBasicTab(targetPage, ENERGY_USAGE_TEXT);
+      const energyUsageExtracted = await extractSingleSectionTableByHints(targetPage, "用電紀錄", [
+        "電費月份",
+        "最高需量",
+        "用電",
+        "尖峰",
+        "半尖峰",
+        "離峰",
+      ]);
+      const energyUsageTables = aggregateEnergyUsageSections(energyUsageExtracted);
+
+      await openBasicTab(targetPage, PRICE_RECORD_TEXT);
+      const priceTables = await extractSingleSectionTableByHints(targetPage, "電費紀錄", [
+        "電費月份",
+        "基本電費",
+        "流動電費",
+        "總額",
+      ]);
+      const basicAllJsonPath = writeOutputJson("basic_all.json", {
+        basic: basicTables,
+        energy_usage: energyUsageTables,
+        price: priceTables,
+      });
+
+      log(`Saved JSON: ${basicAllJsonPath}`);
+      return;
+    }
+
     const headings = await collectHeadings(targetPage);
     const definitionListPairs = await collectDefinitionLists(targetPage);
     const metricCandidates = dedupeMetrics(await collectMetricCandidates(targetPage));
     const tables = await collectTables(targetPage);
     const visibleText = await collectVisibleText(targetPage);
     const html = await targetPage.content();
-    const dashboardData = extractDashboardDataFromHtml(html);
+    const dashboardData =
+      TARGET_PAGE === "dashboard" ? extractDashboardDataFromHtml(html) : null;
 
     const payload = {
       extractedAt: new Date().toISOString(),
@@ -1398,9 +2092,10 @@ async function main() {
         baseUrl: BASE_URL,
         pageUrl: targetPage.url(),
         electricNumber:
-          dashboardData.electric_number || (process.env.HVCS_ELECTRIC_NUMBER || "").trim() || null,
+          dashboardData?.electric_number || (process.env.HVCS_ELECTRIC_NUMBER || "").trim() || null,
       },
-      dashboardData,
+      targetPage: TARGET_PAGE,
+      ...(dashboardData ? { dashboardData } : {}),
       headings,
       keyValues: buildKeyValueObject(definitionListPairs),
       definitionListPairs,
@@ -1412,7 +2107,9 @@ async function main() {
     await writeArtifacts(targetPage, payload);
 
     log(`Saved JSON: ${OUTPUT_PATH}`);
-    log(`Saved cleaned JSON: ${CLEAN_OUTPUT_PATH}`);
+    if (dashboardData) {
+      log(`Saved cleaned JSON: ${CLEAN_OUTPUT_PATH}`);
+    }
     log(`Saved HTML snapshot: ${HTML_SNAPSHOT_PATH}`);
     log(`Saved screenshot: ${SCREENSHOT_PATH}`);
   } finally {

@@ -5,7 +5,12 @@
   "description": "Playwright helper for capturing Taipower HVCS login state",
   "scripts": {
     "login": "node scripts/hvcs-login.js",
-    "extract:dashboard": "node scripts/extract-dashboard.js"
+    "extract:dashboard": "node scripts/extract-dashboard.js",
+    "open:cycle": "HVCS_TARGET_PAGE=cycle node scripts/extract-dashboard.js",
+    "basic:all": "HVCS_TARGET_PAGE=all node scripts/extract-dashboard.js",
+    "open:basic": "HVCS_TARGET_PAGE=basic node scripts/extract-dashboard.js",
+    "open:energy_usage": "HVCS_TARGET_PAGE=energy_usage node scripts/extract-dashboard.js",
+    "open:price": "HVCS_TARGET_PAGE=price node scripts/extract-dashboard.js"
   },
   "dependencies": {
     "playwright": "^1.52.0"
