@@ -1,0 +1,4 @@
+interface:
+  display_name: "HVCS Basic All"
+  short_description: "Run repo-local basic:all export"
+  default_prompt: "Use this skill to run npm run basic:all in this repository and verify output/basic_all.json."
