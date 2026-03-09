@@ -1537,12 +1537,13 @@ async function selectPowerAnalyzeYstdAndFifteenMin(page) {
   await waitForPageSettled(page, 400);
   await clickPowerAnalyzeQuery(page).catch(() => {});
   await waitForPageSettled(page, 700);
-  await waitForPowerAnalyzeRendered(
+  const rendered = await waitForPowerAnalyzeRendered(
     page,
     beforeQueryText,
     GENERAL_RENDER_TIMEOUT_MS,
     y.isoDate
   );
+  return rendered;
 }
 
 async function setPowerAnalyzeDate(page, dateInfo) {
@@ -2353,10 +2354,12 @@ async function main() {
     }
 
     if (TARGET_PAGE === "power_analyze") {
-      await selectPowerAnalyzeYstdAndFifteenMin(targetPage);
+      const rendered = await selectPowerAnalyzeYstdAndFifteenMin(targetPage);
       const y = getYesterdayInfo();
-      const chartData = await collectCycleRawChartData(targetPage);
-      const organizedSeries = buildPowerAnalyzeSeriesData(chartData);
+      const chartData = rendered ? await collectCycleRawChartData(targetPage) : [];
+      const organizedSeries = rendered
+        ? buildPowerAnalyzeSeriesData(chartData)
+        : { series: [] };
       const payload = {
         section: "需量分析",
         granularity: FIFTEEN_MIN_TEXT,
