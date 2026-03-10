@@ -17,6 +17,51 @@ This project contains a Playwright helper for the Taipower HVCS login flow at:
 
 The live site presents an on-page captcha on the login form, so a fully automated login would be brittle and likely fail. This script is designed to guide a human through authentication and persist the resulting browser state for later scraping or navigation.
 
+## Deploy on headless AWS EC2
+
+This repo is feasible to run on EC2, but treat it as "mostly automated" instead of "fully hands-off":
+
+- Feasible: authenticated session is persisted in `.auth/browser-profile` and `.auth/storage-state.json`, so normal data jobs can reuse login state.
+- Constraint: HVCS login includes captcha/human verification, so expired sessions require a manual login refresh.
+- Current behavior: scripts use headed Chromium (`headless: false`) and may pause for manual steps.
+
+### 1) Provision dependencies on EC2
+
+```bash
+sudo apt update
+sudo apt install -y nodejs npm xvfb
+npm install
+npx playwright install chromium
+sudo npx playwright install-deps chromium
+```
+
+### 2) One-time manual login on EC2 (virtual display)
+
+```bash
+xvfb-run -a -s "-screen 0 1440x960x24" npm run login
+```
+
+Use your remote GUI path (for example VNC/noVNC) to view the browser, complete captcha/login, then let the script save auth state.
+
+### 3) Run extraction jobs on EC2
+
+```bash
+HVCS_ELECTRIC_NUMBER='your-electric-number' \
+xvfb-run -a -s "-screen 0 1440x960x24" npm run extract:dashboard
+```
+
+Set `HVCS_ELECTRIC_NUMBER` to avoid manual electric-number selection pauses.
+
+### 4) Refresh auth when session expires
+
+If a scheduled job is redirected back to login, rerun step 2 to refresh the saved session and continue.
+
+## Headed vs headless recommendation
+
+- Dev phase (monitoring): keep headed mode so you can watch and intervene during captcha/login.
+- Scheduled phase: headless mode can be added later as an env-based toggle for unattended runs when session is still valid.
+- Practical pattern: use headed mode for login refreshes, and unattended mode for routine extraction.
+
 ## Install
 
 ```bash
