@@ -19,13 +19,51 @@ The live site presents an on-page captcha on the login form, so a fully automate
 
 ## Deploy on headless AWS EC2
 
-This repo is feasible to run on EC2, but treat it as "mostly automated" instead of "fully hands-off":
+Yes, you can copy this repo to an AWS EC2 instance and run it there.
 
-- Feasible: authenticated session is persisted in `.auth/browser-profile` and `.auth/storage-state.json`, so normal data jobs can reuse login state.
-- Constraint: HVCS login includes captcha/human verification, so expired sessions require a manual login refresh.
-- Current behavior: scripts use headed Chromium (`headless: false`) and may pause for manual steps.
+Treat the EC2 setup as "browser-assisted automation", not a fully hands-off batch worker:
 
-### 1) Provision dependencies on EC2
+- The code can be copied directly to EC2.
+- The authenticated session should be created on EC2 by doing a fresh human login there.
+- HVCS login still includes captcha / human verification, so expired sessions require a manual refresh.
+- The current scripts launch Chromium with `headless: false` and may pause for manual steps.
+- On a plain server, you still need a usable display path such as Xvfb plus VNC/noVNC, or another remote desktop path.
+
+What to copy to EC2:
+
+- the repo itself
+- an `.env` template if you use one, but keep only the variable names and leave values empty
+
+What to install on EC2:
+
+- Node.js and `npm`
+- project dependencies via `npm install`
+- Playwright Chromium
+- system libraries required by Playwright
+- a virtual display / remote GUI path if you need to watch or complete login
+
+### 1) Copy the repo to EC2
+
+From your local machine, copy the project to the instance:
+
+```bash
+scp -r /path/to/hvcs-login ubuntu@<ec2-host>:/home/ubuntu/
+```
+
+Or with `rsync`:
+
+```bash
+rsync -av /path/to/hvcs-login/ ubuntu@<ec2-host>:/home/ubuntu/hvcs-login/
+```
+
+Then connect to the instance:
+
+```bash
+ssh ubuntu@<ec2-host>
+cd /home/ubuntu/hvcs-login
+```
+
+### 2) Provision dependencies on EC2
 
 ```bash
 sudo apt update
@@ -35,7 +73,31 @@ npx playwright install chromium
 sudo npx playwright install-deps chromium
 ```
 
-### 2) One-time manual login on EC2 (virtual display)
+If you plan to watch the browser remotely, also set up your GUI access path, for example:
+
+- VNC
+- noVNC
+- another remote desktop path connected to the Xvfb display
+
+### 3) Prepare `.env` on EC2
+
+Do not transfer `.auth/browser-profile/` or `.auth/storage-state.json` from another machine.
+
+Instead, create or edit `.env` on EC2 with only the keys you want to keep, and leave the values empty until you are ready to fill them on that machine.
+
+Example:
+
+```dotenv
+HVCS_ACCOUNT=
+HVCS_PASSWORD=
+HVCS_ELECTRIC_NUMBER=
+HVCS_POWER_ANALYZE_DATE=
+HVCS_POWER_ANALYZE_MONTH=
+```
+
+The login/session state will be created fresh on EC2 after the human login flow.
+
+### 4) One-time manual login on EC2 (virtual display)
 
 ```bash
 xvfb-run -a -s "-screen 0 1440x960x24" npm run login
@@ -43,7 +105,7 @@ xvfb-run -a -s "-screen 0 1440x960x24" npm run login
 
 Use your remote GUI path (for example VNC/noVNC) to view the browser, complete captcha/login, then let the script save auth state.
 
-### 3) Run extraction jobs on EC2
+### 5) Run extraction jobs on EC2
 
 ```bash
 HVCS_ELECTRIC_NUMBER='your-electric-number' \
@@ -52,9 +114,40 @@ xvfb-run -a -s "-screen 0 1440x960x24" npm run extract:dashboard
 
 Set `HVCS_ELECTRIC_NUMBER` to avoid manual electric-number selection pauses.
 
-### 4) Refresh auth when session expires
+Run the three managed artifact flows the same way:
 
-If a scheduled job is redirected back to login, rerun step 2 to refresh the saved session and continue.
+Basic all:
+
+```bash
+HVCS_ELECTRIC_NUMBER='your-electric-number' \
+xvfb-run -a -s "-screen 0 1440x960x24" npm run basic:all
+```
+
+Power analyze day:
+
+```bash
+HVCS_ELECTRIC_NUMBER='your-electric-number' \
+HVCS_POWER_ANALYZE_DATE=2026-03-11 \
+xvfb-run -a -s "-screen 0 1440x960x24" npm run open:power-analyze
+```
+
+Power analyze month:
+
+```bash
+HVCS_ELECTRIC_NUMBER='your-electric-number' \
+HVCS_POWER_ANALYZE_MONTH=2026-03 \
+xvfb-run -a -s "-screen 0 1440x960x24" npm run open:power-analyze-month
+```
+
+Managed artifacts will be written to:
+
+- `artifacts/hvcs-basic-all/<electric-number>/<selected-year>.json`
+- `artifacts/hvcs-power-analyze-day/<electric-number>/<YYYY-MM-DD>.json`
+- `artifacts/hvcs-power-analyze-month/<electric-number>/<YYYY-MM>.json`
+
+### 6) Refresh auth when session expires
+
+If a scheduled job is redirected back to login, rerun step 4 to refresh the saved session and continue.
 
 ## Headed vs headless recommendation
 
