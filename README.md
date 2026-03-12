@@ -152,7 +152,7 @@ To open `用戶資訊 -> 用電紀錄`, extract only table data, and save as `ou
 npm run open:energy_usage
 ```
 
-To navigate to `需量分析 (PowerAnalyze)`, switch to `每15分鐘`, target a single day, and save as `output/power-analyze.*`:
+To navigate to `需量分析 (PowerAnalyze)`, switch to `每15分鐘`, target a single day, and save a managed artifact under `artifacts/hvcs-power-analyze-day/<electric-number>/<YYYY-MM-DD>.json`:
 
 ```bash
 npm run open:power-analyze
@@ -164,7 +164,7 @@ Optional target date for the single-day session (default is yesterday):
 HVCS_POWER_ANALYZE_DATE=2026-03-11 npm run open:power-analyze
 ```
 
-To iterate a full month on `需量分析 (PowerAnalyze) -> 每15分鐘` and save all daily series into one file `output/power-analyze-month.json`:
+To iterate a full month on `需量分析 (PowerAnalyze) -> 每15分鐘` and save all daily series into `artifacts/hvcs-power-analyze-month/<electric-number>/<YYYY-MM>.json`:
 
 ```bash
 npm run open:power-analyze-month
@@ -177,7 +177,7 @@ HVCS_POWER_ANALYZE_MONTH=2026-03 npm run open:power-analyze-month
 ```
 
 To run `用戶資料 + 用電紀錄 + 電費紀錄` in one shot and save:
-- `output/basic_all.json`
+- `artifacts/hvcs-basic-all/<electric-number>/<selected-year>.json`
 
 ```bash
 npm run basic:all
@@ -191,19 +191,22 @@ HVCS_MANUAL_TO_CYCLE=1 HVCS_ELECTRIC_NUMBER='your-electric-number' npm run open:
 
 If `HVCS_ELECTRIC_NUMBER` is blank, the script pauses on the `用電管理` flow and waits for you to click the desired `電號` in the browser. It now detects the context switch automatically and continues on its own; terminal confirmation is only used as a timeout fallback.
 
-Artifacts are written to:
+Managed skill artifacts are written to:
+
+- `artifacts/hvcs-basic-all/<electric-number>/<selected-year>.json`
+- `artifacts/hvcs-power-analyze-day/<electric-number>/<YYYY-MM-DD>.json`
+- `artifacts/hvcs-power-analyze-month/<electric-number>/<YYYY-MM>.json`
+
+Other non-skill debug outputs are still written to:
 
 - `output/today-dashboard.json`
 - `output/today-dashboard.cleaned.json`
-- `output/today-dashboard.html`
-- `output/today-dashboard.png`
 - `output/cycle-navigation-requests.json` (only when `HVCS_MANUAL_TO_CYCLE=1`)
 
 The script reuses the persistent browser profile in `.auth/browser-profile`, navigates by menu text, and extracts:
 
 - clean dashboard key/value data in `output/today-dashboard.cleaned.json`
 - full debug output in `output/today-dashboard.json`
-- raw HTML and screenshot for troubleshooting
 
 If the session is no longer authenticated, the script opens the real login page, waits for you to complete captcha/login, saves the refreshed session to `.auth/storage-state.json`, and continues in the same browser context.
 It now detects successful login automatically; terminal confirmation is only used as a timeout fallback if the page does not transition cleanly.

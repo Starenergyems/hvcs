@@ -1,12 +1,12 @@
 ---
 name: hvcs-power-analyze-day
-description: Run the repository-local daily HVCS PowerAnalyze extraction flow that navigates to 需量分析, selects 每15分鐘, queries one target day, and writes output/power-analyze.json. Use when the user asks for a single-day power-analyze export, a day profile, or to re-run the PowerAnalyze session for a specific date.
+description: Run the repository-local daily HVCS PowerAnalyze extraction flow that navigates to 需量分析, selects 每15分鐘, queries one target day, and writes artifacts/hvcs-power-analyze-day/<electric-number>/<YYYY-MM-DD>.json. Use when the user asks for a single-day power-analyze export, a day profile, or to re-run the PowerAnalyze session for a specific date.
 ---
 
 # HVCS Power Analyze Day
 
 ## Overview
-Run `npm run open:power-analyze` in this repository and verify the daily output at `output/power-analyze.json`.
+Run `npm run open:power-analyze` in this repository and verify the daily output at `artifacts/hvcs-power-analyze-day/<electric-number>/<YYYY-MM-DD>.json`.
 
 ## Workflow
 1. Confirm working directory is this repo (`/home/ubuntu24/hvcs-login`).
@@ -24,7 +24,7 @@ Run `npm run open:power-analyze` in this repository and verify the daily output 
 
 ## Output Contract
 Primary artifact:
-- `output/power-analyze.json`
+- `artifacts/hvcs-power-analyze-day/<electric-number>/<YYYY-MM-DD>.json`
 
 Expected top-level keys:
 - `section`

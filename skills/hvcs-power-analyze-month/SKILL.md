@@ -1,12 +1,12 @@
 ---
 name: hvcs-power-analyze-month
-description: Run the repository-local monthly HVCS PowerAnalyze extraction flow that navigates to 需量分析, selects 每15分鐘, iterates daily queries for one month, and writes output/power-analyze-month.json. Use when the user asks for monthly power-analyze export, per-day iteration, or handling timeout/no-render as empty series.
+description: Run the repository-local monthly HVCS PowerAnalyze extraction flow that navigates to 需量分析, selects 每15分鐘, iterates daily queries for one month, and writes artifacts/hvcs-power-analyze-month/<electric-number>/<YYYY-MM>.json. Use when the user asks for monthly power-analyze export, per-day iteration, or handling timeout/no-render as empty series.
 ---
 
 # HVCS Power Analyze Month
 
 ## Overview
-Run `npm run open:power-analyze-month` in this repository and verify the monthly output at `output/power-analyze-month.json`.
+Run `npm run open:power-analyze-month` in this repository and verify the monthly output at `artifacts/hvcs-power-analyze-month/<electric-number>/<YYYY-MM>.json`.
 
 ## Workflow
 1. Confirm working directory is this repo (`/home/ubuntu24/hvcs-login`).
@@ -24,7 +24,7 @@ Run `npm run open:power-analyze-month` in this repository and verify the monthly
 
 ## Output Contract
 Primary artifact:
-- `output/power-analyze-month.json`
+- `artifacts/hvcs-power-analyze-month/<electric-number>/<YYYY-MM>.json`
 
 Expected top-level keys:
 - `section`

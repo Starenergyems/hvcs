@@ -14,6 +14,7 @@ const AUTH_DIR = path.resolve(__dirname, "..", ".auth");
 const USER_DATA_DIR = path.join(AUTH_DIR, "browser-profile");
 const STORAGE_STATE_PATH = path.join(AUTH_DIR, "storage-state.json");
 const OUTPUT_DIR = path.resolve(__dirname, "..", "output");
+const ARTIFACTS_DIR = path.resolve(__dirname, "..", "artifacts");
 const TARGET_PAGE = (process.env.HVCS_TARGET_PAGE || "dashboard").trim().toLowerCase();
 const TARGET_BASENAME =
   TARGET_PAGE === "cycle"
@@ -33,8 +34,6 @@ const TARGET_BASENAME =
       : "today-dashboard";
 const OUTPUT_PATH = path.join(OUTPUT_DIR, `${TARGET_BASENAME}.json`);
 const CLEAN_OUTPUT_PATH = path.join(OUTPUT_DIR, `${TARGET_BASENAME}.cleaned.json`);
-const HTML_SNAPSHOT_PATH = path.join(OUTPUT_DIR, `${TARGET_BASENAME}.html`);
-const SCREENSHOT_PATH = path.join(OUTPUT_DIR, `${TARGET_BASENAME}.png`);
 const CYCLE_NAV_TRACE_PATH = path.join(OUTPUT_DIR, "cycle-navigation-requests.json");
 const CANDIDATE_SUCCESS_TEXT = ["登出", "登    出", "會員專區", "用電資料查詢"];
 const DASHBOARD_TEXT = "本日用電儀表板";
@@ -1873,6 +1872,93 @@ function writeOutputJson(fileName, payload) {
   return outputPath;
 }
 
+function writeArtifactJson(pathParts, payload) {
+  const artifactPath = path.join(ARTIFACTS_DIR, ...pathParts);
+  fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
+  fs.writeFileSync(artifactPath, JSON.stringify(payload, null, 2));
+  return artifactPath;
+}
+
+function sanitizeArtifactSegment(value, fallback) {
+  const normalized = String(value || "")
+    .trim()
+    .replace(/[\\/]/g, "-");
+  return normalized || fallback;
+}
+
+function resolveArtifactElectricNumber(value) {
+  const digits = String(value || "").replace(/\D+/g, "");
+  return sanitizeArtifactSegment(digits, "unknown-electric-number");
+}
+
+async function detectCurrentElectricNumber(page) {
+  const html = await page.content().catch(() => "");
+  const fromStrong =
+    html.match(/電號[\s\S]{0,200}?<strong[^>]*class="text-danger"[^>]*>(\d+)<\/strong>/)?.[1] || "";
+  if (fromStrong) {
+    return fromStrong;
+  }
+
+  const text = await page.locator("body").innerText().catch(() => "");
+  const fromText = text.match(/電號[:：]?\s*(\d{8,})/)?.[1] || "";
+  return fromText || (process.env.HVCS_ELECTRIC_NUMBER || "").trim() || null;
+}
+
+async function detectSelectedYear(page) {
+  const selectedYear = await page
+    .evaluate(() => {
+      const normalize = (value) => String(value ?? "").replace(/\s+/g, " ").trim();
+      const isVisible = (el) => {
+        const style = window.getComputedStyle(el);
+        if (style.display === "none" || style.visibility === "hidden") return false;
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      };
+
+      const selects = Array.from(document.querySelectorAll("select")).filter(isVisible);
+      for (const select of selects) {
+        const option = select.options[select.selectedIndex];
+        const selected = normalize(option?.value || option?.textContent || "");
+        if (!/^\d{4}$/.test(selected)) continue;
+
+        const localText = normalize(
+          [
+            select.parentElement?.textContent || "",
+            select.previousElementSibling?.textContent || "",
+            select.nextElementSibling?.textContent || "",
+          ].join(" ")
+        );
+        if (localText.includes("年")) {
+          return selected;
+        }
+      }
+
+      return "";
+    })
+    .catch(() => "");
+
+  if (selectedYear) {
+    return selectedYear;
+  }
+
+  const text = await page.locator("body").innerText().catch(() => "");
+  return text.match(/\b(20\d{2})\b\s*年/)?.[1] || null;
+}
+
+function buildBasicAllArtifactPath(electricNumber, selectedYear) {
+  return ["hvcs-basic-all", resolveArtifactElectricNumber(electricNumber), `${selectedYear}.json`];
+}
+
+function buildPowerAnalyzeDayArtifactPath(electricNumber, dateInfo) {
+  return ["hvcs-power-analyze-day", resolveArtifactElectricNumber(electricNumber), `${dateInfo.isoDate}.json`];
+}
+
+function buildPowerAnalyzeMonthArtifactPath(electricNumber, targetMonth) {
+  const yyyy = String(targetMonth.year).padStart(4, "0");
+  const mm = String(targetMonth.month).padStart(2, "0");
+  return ["hvcs-power-analyze-month", resolveArtifactElectricNumber(electricNumber), `${yyyy}-${mm}.json`];
+}
+
 function normalizeChartValues(data) {
   if (!Array.isArray(data)) return [];
   return data.map((point) => {
@@ -2365,14 +2451,12 @@ function extractDashboardDataFromHtml(html) {
   };
 }
 
-async function writeArtifacts(page, payload) {
+async function writeArtifacts(payload) {
   fs.mkdirSync(OUTPUT_DIR, { recursive: true });
   fs.writeFileSync(OUTPUT_PATH, JSON.stringify(payload, null, 2));
   if (payload.dashboardData) {
     fs.writeFileSync(CLEAN_OUTPUT_PATH, JSON.stringify(payload.dashboardData, null, 2));
   }
-  fs.writeFileSync(HTML_SNAPSHOT_PATH, await page.content(), "utf8");
-  await page.screenshot({ path: SCREENSHOT_PATH, fullPage: true });
 }
 
 async function main() {
@@ -2419,11 +2503,9 @@ async function main() {
         cycleData,
       };
 
-      await writeArtifacts(targetPage, payload);
+      await writeArtifacts(payload);
 
       log(`Saved JSON: ${OUTPUT_PATH}`);
-      log(`Saved HTML snapshot: ${HTML_SNAPSHOT_PATH}`);
-      log(`Saved screenshot: ${SCREENSHOT_PATH}`);
       return;
     }
 
@@ -2435,17 +2517,16 @@ async function main() {
         "總額",
       ]);
 
-      await writeArtifacts(targetPage, payload);
+      await writeArtifacts(payload);
 
       log(`Saved JSON: ${OUTPUT_PATH}`);
-      log(`Saved HTML snapshot: ${HTML_SNAPSHOT_PATH}`);
-      log(`Saved screenshot: ${SCREENSHOT_PATH}`);
       return;
     }
 
     if (TARGET_PAGE === "power_analyze") {
       const rendered = await selectPowerAnalyzeYstdAndFifteenMin(targetPage);
       const targetDate = parseTargetPowerAnalyzeDate();
+      const electricNumber = await detectCurrentElectricNumber(targetPage);
       const chartData = rendered ? await collectCycleRawChartData(targetPage) : [];
       const organizedSeries = rendered
         ? buildPowerAnalyzeSeriesData(chartData)
@@ -2462,11 +2543,12 @@ async function main() {
         series: organizedSeries.series,
       };
 
-      await writeArtifacts(targetPage, payload);
+      const artifactPath = writeArtifactJson(
+        buildPowerAnalyzeDayArtifactPath(electricNumber, targetDate),
+        payload
+      );
 
-      log(`Saved JSON: ${OUTPUT_PATH}`);
-      log(`Saved HTML snapshot: ${HTML_SNAPSHOT_PATH}`);
-      log(`Saved screenshot: ${SCREENSHOT_PATH}`);
+      log(`Saved artifact JSON: ${artifactPath}`);
       return;
     }
 
@@ -2474,6 +2556,7 @@ async function main() {
       await ensurePowerAnalyzeFifteenMin(targetPage);
 
       const targetMonth = parseTargetMonth();
+      const electricNumber = await detectCurrentElectricNumber(targetPage);
       const monthDates = listMonthDates(targetMonth.year, targetMonth.month);
       const daily = [];
 
@@ -2505,22 +2588,21 @@ async function main() {
         daily,
       };
 
-      await writeArtifacts(targetPage, payload);
+      const artifactPath = writeArtifactJson(
+        buildPowerAnalyzeMonthArtifactPath(electricNumber, targetMonth),
+        payload
+      );
 
-      log(`Saved JSON: ${OUTPUT_PATH}`);
-      log(`Saved HTML snapshot: ${HTML_SNAPSHOT_PATH}`);
-      log(`Saved screenshot: ${SCREENSHOT_PATH}`);
+      log(`Saved artifact JSON: ${artifactPath}`);
       return;
     }
 
     if (TARGET_PAGE === "basic") {
       const payload = await extractBasicSections(targetPage);
 
-      await writeArtifacts(targetPage, payload);
+      await writeArtifacts(payload);
 
       log(`Saved JSON: ${OUTPUT_PATH}`);
-      log(`Saved HTML snapshot: ${HTML_SNAPSHOT_PATH}`);
-      log(`Saved screenshot: ${SCREENSHOT_PATH}`);
       return;
     }
 
@@ -2535,19 +2617,19 @@ async function main() {
       ]);
       const payload = aggregateEnergyUsageSections(extracted);
 
-      await writeArtifacts(targetPage, payload);
+      await writeArtifacts(payload);
 
       log(`Saved JSON: ${OUTPUT_PATH}`);
-      log(`Saved HTML snapshot: ${HTML_SNAPSHOT_PATH}`);
-      log(`Saved screenshot: ${SCREENSHOT_PATH}`);
       return;
     }
 
     if (TARGET_PAGE === "all") {
       await openBasicTab(targetPage, USER_PROFILE_TEXT);
       const basicTables = await extractBasicSections(targetPage);
+      const electricNumber = await detectCurrentElectricNumber(targetPage);
 
       await openBasicTab(targetPage, ENERGY_USAGE_TEXT);
+      const selectedYearFromEnergyUsage = await detectSelectedYear(targetPage);
       const energyUsageExtracted = await extractSingleSectionTableByHints(targetPage, "用電紀錄", [
         "電費月份",
         "最高需量",
@@ -2559,19 +2641,27 @@ async function main() {
       const energyUsageTables = aggregateEnergyUsageSections(energyUsageExtracted);
 
       await openBasicTab(targetPage, PRICE_RECORD_TEXT);
+      const selectedYearFromPrice = await detectSelectedYear(targetPage);
       const priceTables = await extractSingleSectionTableByHints(targetPage, "電費紀錄", [
         "電費月份",
         "基本電費",
         "流動電費",
         "總額",
       ]);
-      const basicAllJsonPath = writeOutputJson("basic_all.json", {
-        basic: basicTables,
-        energy_usage: energyUsageTables,
-        price: priceTables,
-      });
+      const selectedYear =
+        selectedYearFromEnergyUsage ||
+        selectedYearFromPrice ||
+        String(new Date().getFullYear());
+      const basicAllJsonPath = writeArtifactJson(
+        buildBasicAllArtifactPath(electricNumber, selectedYear),
+        {
+          basic: basicTables,
+          energy_usage: energyUsageTables,
+          price: priceTables,
+        }
+      );
 
-      log(`Saved JSON: ${basicAllJsonPath}`);
+      log(`Saved artifact JSON: ${basicAllJsonPath}`);
       return;
     }
 
@@ -2602,14 +2692,12 @@ async function main() {
       text: visibleText,
     };
 
-    await writeArtifacts(targetPage, payload);
+    await writeArtifacts(payload);
 
     log(`Saved JSON: ${OUTPUT_PATH}`);
     if (dashboardData) {
       log(`Saved cleaned JSON: ${CLEAN_OUTPUT_PATH}`);
     }
-    log(`Saved HTML snapshot: ${HTML_SNAPSHOT_PATH}`);
-    log(`Saved screenshot: ${SCREENSHOT_PATH}`);
   } finally {
     await context.close();
   }

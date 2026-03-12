@@ -2,4 +2,4 @@
 interface:
   display_name: "HVCS Power Analyze Month"
   short_description: "Run monthly PowerAnalyze export"
-  default_prompt: "Use this skill to run npm run open:power-analyze-month and verify output/power-analyze-month.json."
+  default_prompt: "Use this skill to run npm run open:power-analyze-month and verify artifacts/hvcs-power-analyze-month/<electric-number>/<YYYY-MM>.json."
