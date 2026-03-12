@@ -1524,6 +1524,42 @@ function getYesterdayInfo() {
   };
 }
 
+function parseTargetPowerAnalyzeDate() {
+  const raw = normalizeText(process.env.HVCS_POWER_ANALYZE_DATE || "");
+  if (!raw) {
+    return getYesterdayInfo();
+  }
+
+  const match = raw.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+  if (!match) {
+    throw new Error("HVCS_POWER_ANALYZE_DATE must use YYYY-MM-DD format.");
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const candidate = new Date(year, month - 1, day);
+  candidate.setHours(0, 0, 0, 0);
+
+  if (
+    Number.isNaN(candidate.getTime()) ||
+    candidate.getFullYear() !== year ||
+    candidate.getMonth() !== month - 1 ||
+    candidate.getDate() !== day
+  ) {
+    throw new Error("HVCS_POWER_ANALYZE_DATE is not a valid calendar date.");
+  }
+
+  const yesterday = new Date();
+  yesterday.setHours(0, 0, 0, 0);
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (candidate.getTime() > yesterday.getTime()) {
+    throw new Error("HVCS_POWER_ANALYZE_DATE cannot be later than yesterday.");
+  }
+
+  return buildDateInfo(year, month, day);
+}
+
 function parseTargetMonth() {
   const raw = normalizeText(process.env.HVCS_POWER_ANALYZE_MONTH || "");
   const match = raw.match(/^(\d{4})[-/](\d{1,2})$/);
@@ -1596,8 +1632,8 @@ async function runPowerAnalyzeQueryByDate(page, dateInfo) {
 
 async function selectPowerAnalyzeYstdAndFifteenMin(page) {
   await ensurePowerAnalyzeFifteenMin(page);
-  const y = getYesterdayInfo();
-  return runPowerAnalyzeQueryByDate(page, y);
+  const targetDate = parseTargetPowerAnalyzeDate();
+  return runPowerAnalyzeQueryByDate(page, targetDate);
 }
 
 async function setPowerAnalyzeDate(page, dateInfo) {
@@ -2409,7 +2445,7 @@ async function main() {
 
     if (TARGET_PAGE === "power_analyze") {
       const rendered = await selectPowerAnalyzeYstdAndFifteenMin(targetPage);
-      const y = getYesterdayInfo();
+      const targetDate = parseTargetPowerAnalyzeDate();
       const chartData = rendered ? await collectCycleRawChartData(targetPage) : [];
       const organizedSeries = rendered
         ? buildPowerAnalyzeSeriesData(chartData)
@@ -2418,8 +2454,8 @@ async function main() {
         section: "需量分析",
         granularity: FIFTEEN_MIN_TEXT,
         target_date: {
-          gregorian: y.slashDate,
-          roc: y.rocDate,
+          gregorian: targetDate.slashDate,
+          roc: targetDate.rocDate,
         },
         page_url: targetPage.url(),
         title: await targetPage.title().catch(() => ""),

@@ -1,0 +1,5 @@
+---
+interface:
+  display_name: "HVCS Power Analyze Day"
+  short_description: "Run daily PowerAnalyze export"
+  default_prompt: "Use this skill to run npm run open:power-analyze in this repository and verify output/power-analyze.json."

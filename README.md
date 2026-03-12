@@ -152,10 +152,16 @@ To open `用戶資訊 -> 用電紀錄`, extract only table data, and save as `ou
 npm run open:energy_usage
 ```
 
-To navigate to `需量分析 (PowerAnalyze)`, switch to `每15分鐘`, target yesterday data, and save as `output/power-analyze.*`:
+To navigate to `需量分析 (PowerAnalyze)`, switch to `每15分鐘`, target a single day, and save as `output/power-analyze.*`:
 
 ```bash
 npm run open:power-analyze
+```
+
+Optional target date for the single-day session (default is yesterday):
+
+```bash
+HVCS_POWER_ANALYZE_DATE=2026-03-11 npm run open:power-analyze
 ```
 
 To iterate a full month on `需量分析 (PowerAnalyze) -> 每15分鐘` and save all daily series into one file `output/power-analyze-month.json`:
