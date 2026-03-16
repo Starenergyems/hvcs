@@ -6,14 +6,15 @@ description: Run the repository-local daily HVCS PowerAnalyze extraction flow th
 # HVCS Power Analyze Day
 
 ## Overview
-Run `npm run open:power-analyze` in this repository and verify the daily output at `artifacts/hvcs-power-analyze-day/<electric-number>/<YYYY-MM-DD>.json`.
+Run `npm run hvcs:power:day` in this repository, monitor live progress from `logs/headless/*.progress.json` or `npm run hvcs:watch`, and verify the daily output at `artifacts/hvcs-power-analyze-day/<electric-number>/<YYYY-MM-DD>.json`.
 
 ## Workflow
-1. Confirm working directory is this repo (`/home/ubuntu24/hvcs-login`).
+1. Confirm working directory is this repo (`/home/ubuntu/wt-hvcs-headless/hvcs-headless`).
 2. Optionally set `HVCS_POWER_ANALYZE_DATE` in `.env` or inline as `YYYY-MM-DD`.
-3. Run `npm run open:power-analyze`.
-4. Wait for manual browser steps when login/captcha is required.
-5. Verify output file exists and is valid JSON.
+3. Run `npm run hvcs:power:day`.
+4. Immediately follow live progress with `npm run hvcs:watch` or by reading the newest `logs/headless/*.progress.json` file and report stage changes back to the user while the run is active.
+5. If progress reaches `auth_required`, tell the user to connect to the temporary noVNC session, complete captcha/login, and let the run continue.
+6. Verify output file exists and is valid JSON.
 
 ## Runtime behavior
 - Navigates to `https://service.taipower.com.tw/hvcs/Customer/Module/PowerAnalyze`.
@@ -27,6 +28,7 @@ Primary artifact:
 - `artifacts/hvcs-power-analyze-day/<electric-number>/<YYYY-MM-DD>.json`
 
 Expected top-level keys:
+- `updated_at`
 - `section`
 - `granularity`
 - `target_date`
@@ -43,3 +45,7 @@ For each item in `series`:
 - `series_data` (`time` + `value` pairs)
 
 Do not add extra sections unless the user asks.
+
+## Live Progress
+- Prefer reporting progress from the structured progress file over parsing plain-text logs.
+- Important stages to relay: `starting`, `xvfb_ready`, `checking_auth`, `auth_required`, `auth_refreshed`, `navigating`, `completed`, `failed`

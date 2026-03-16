@@ -26,8 +26,8 @@ Treat the EC2 setup as "browser-assisted automation", not a fully hands-off batc
 - The code can be copied directly to EC2.
 - The authenticated session should be created on EC2 by doing a fresh human login there.
 - HVCS login still includes captcha / human verification, so expired sessions require a manual refresh.
-- The current scripts launch Chromium with `headless: false` and may pause for manual steps.
-- On a plain server, you still need a usable display path such as Xvfb plus VNC/noVNC, or another remote desktop path.
+- The current scripts launch Chromium with `headless: false`.
+- On a plain server, the supported setup is a shared wrapper that starts Xvfb for every run and only starts VNC/noVNC when saved auth is invalid and a captcha/login is needed.
 
 What to copy to EC2:
 
@@ -40,44 +40,39 @@ What to install on EC2:
 - project dependencies via `npm install`
 - Playwright Chromium
 - system libraries required by Playwright
-- a virtual display / remote GUI path if you need to watch or complete login
+- a virtual display / remote GUI path for on-demand login refresh
 
 ### 1) Copy the repo to EC2
 
 From your local machine, copy the project to the instance:
 
 ```bash
-scp -r /path/to/hvcs-login ubuntu@<ec2-host>:/home/ubuntu/
+scp -r /path/to/hvcs-headless ubuntu@<ec2-host>:/home/ubuntu/wt-hvcs-headless/
 ```
 
 Or with `rsync`:
 
 ```bash
-rsync -av /path/to/hvcs-login/ ubuntu@<ec2-host>:/home/ubuntu/hvcs-login/
+rsync -av /path/to/hvcs-headless/ ubuntu@<ec2-host>:/home/ubuntu/wt-hvcs-headless/hvcs-headless/
 ```
 
 Then connect to the instance:
 
 ```bash
 ssh ubuntu@<ec2-host>
-cd /home/ubuntu/hvcs-login
+cd /home/ubuntu/wt-hvcs-headless/hvcs-headless
 ```
 
 ### 2) Provision dependencies on EC2
 
 ```bash
 sudo apt update
-sudo apt install -y nodejs npm xvfb
+sudo apt install -y nodejs npm xvfb x11vnc novnc websockify openbox
 npm install
 npx playwright install chromium
 sudo npx playwright install-deps chromium
+chmod +x scripts/run-hvcs.sh scripts/manage-remote-display.sh
 ```
-
-If you plan to watch the browser remotely, also set up your GUI access path, for example:
-
-- VNC
-- noVNC
-- another remote desktop path connected to the Xvfb display
 
 ### 3) Prepare `.env` on EC2
 
@@ -97,19 +92,37 @@ HVCS_POWER_ANALYZE_MONTH=
 
 The login/session state will be created fresh on EC2 after the human login flow.
 
-### 4) One-time manual login on EC2 (virtual display)
+### 4) Run with the shared headless wrapper
+
+The shared wrapper always starts Xvfb, runs the selected flow on `DISPLAY=:99`, and only starts x11vnc + noVNC if saved auth is invalid.
+
+Logs are written under `logs/headless/`.
+
+If auth is invalid, the log prints the noVNC tunnel instructions:
 
 ```bash
-xvfb-run -a -s "-screen 0 1440x960x24" npm run login
+ssh -L 6080:localhost:6080 ubuntu@<ec2-host>
 ```
 
-Use your remote GUI path (for example VNC/noVNC) to view the browser, complete captcha/login, then let the script save auth state.
+Then open:
+
+```text
+http://localhost:6080/vnc.html
+```
+
+Run the one-time login flow like this:
+
+```bash
+npm run hvcs:login
+```
+
+When captcha/login is required, connect through noVNC, finish login, and let the wrapper tear the remote-view stack down automatically after auth is saved.
 
 ### 5) Run extraction jobs on EC2
 
 ```bash
 HVCS_ELECTRIC_NUMBER='your-electric-number' \
-xvfb-run -a -s "-screen 0 1440x960x24" npm run extract:dashboard
+npm run hvcs:extract:dashboard
 ```
 
 Set `HVCS_ELECTRIC_NUMBER` to avoid manual electric-number selection pauses.
@@ -120,7 +133,7 @@ Basic all:
 
 ```bash
 HVCS_ELECTRIC_NUMBER='your-electric-number' \
-xvfb-run -a -s "-screen 0 1440x960x24" npm run basic:all
+npm run hvcs:basic:all
 ```
 
 Power analyze day:
@@ -128,7 +141,7 @@ Power analyze day:
 ```bash
 HVCS_ELECTRIC_NUMBER='your-electric-number' \
 HVCS_POWER_ANALYZE_DATE=2026-03-11 \
-xvfb-run -a -s "-screen 0 1440x960x24" npm run open:power-analyze
+npm run hvcs:power:day
 ```
 
 Power analyze month:
@@ -136,7 +149,7 @@ Power analyze month:
 ```bash
 HVCS_ELECTRIC_NUMBER='your-electric-number' \
 HVCS_POWER_ANALYZE_MONTH=2026-03 \
-xvfb-run -a -s "-screen 0 1440x960x24" npm run open:power-analyze-month
+npm run hvcs:power:month
 ```
 
 Managed artifacts will be written to:
@@ -147,13 +160,14 @@ Managed artifacts will be written to:
 
 ### 6) Refresh auth when session expires
 
-If a scheduled job is redirected back to login, rerun step 4 to refresh the saved session and continue.
+If a scheduled job is redirected back to login, rerun the same wrapper command in `--mode=headless`. It will start noVNC only if the saved session is invalid and tear the remote-view stack down after the run.
 
 ## Headed vs headless recommendation
 
-- Dev phase (monitoring): keep headed mode so you can watch and intervene during captcha/login.
-- Scheduled phase: headless mode can be added later as an env-based toggle for unattended runs when session is still valid.
-- Practical pattern: use headed mode for login refreshes, and unattended mode for routine extraction.
+- `--mode=headed` runs on an existing desktop session.
+- `--mode=headless` runs the same browser flow inside Xvfb.
+- Remote viewing is started only on auth fallback.
+- The wrapper tears remote viewing down automatically on success or failure.
 
 ## Install
 

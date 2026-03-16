@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const readline = require("readline");
+const { spawn } = require("child_process");
 const { chromium } = require("playwright");
 
 const ENV_PATH = path.resolve(__dirname, "..", ".env");
@@ -11,7 +12,6 @@ const CYCLE_PATH = "/hvcs/Customer/Module/Cycle";
 const BASIC_PATH = "/hvcs/Customer/Module/Basic";
 const POWER_ANALYZE_PATH = "/hvcs/Customer/Module/PowerAnalyze";
 const AUTH_DIR = path.resolve(__dirname, "..", ".auth");
-const USER_DATA_DIR = path.join(AUTH_DIR, "browser-profile");
 const STORAGE_STATE_PATH = path.join(AUTH_DIR, "storage-state.json");
 const OUTPUT_DIR = path.resolve(__dirname, "..", "output");
 const ARTIFACTS_DIR = path.resolve(__dirname, "..", "artifacts");
@@ -21,6 +21,8 @@ const TARGET_BASENAME =
     ? "cycle-page"
     : TARGET_PAGE === "all"
       ? "all"
+    : TARGET_PAGE === "all_month"
+      ? "all-month"
     : TARGET_PAGE === "power_analyze_month"
       ? "power-analyze-month"
     : TARGET_PAGE === "power_analyze"
@@ -51,6 +53,9 @@ const MANUAL_CYCLE_MONITOR = /^(1|true|yes)$/i.test((process.env.HVCS_MANUAL_TO_
 const DOMCONTENTLOADED_TIMEOUT_MS = Number(process.env.HVCS_DOMCONTENTLOADED_TIMEOUT_MS || 10000);
 const NETWORKIDLE_TIMEOUT_MS = Number(process.env.HVCS_NETWORKIDLE_TIMEOUT_MS || 5000);
 const GENERAL_RENDER_TIMEOUT_MS = 180000;
+const AUTH_REQUIRED_HOOK = (process.env.HVCS_AUTH_REQUIRED_HOOK || "").trim();
+const AUTH_RESOLVED_HOOK = (process.env.HVCS_AUTH_RESOLVED_HOOK || "").trim();
+const PROGRESS_PATH = (process.env.HVCS_PROGRESS_PATH || "").trim();
 const ACCOUNT_SELECTOR =
   'input[placeholder*="帳號"], input[placeholder*="使用者"], input[name*="Account"], input[id*="Account"], input[name*="User"], input[id*="User"], input[autocomplete="username"], input[autocomplete="email"]';
 const PASSWORD_SELECTOR =
@@ -62,6 +67,65 @@ loadEnvFile();
 
 function log(message) {
   process.stdout.write(`${message}\n`);
+}
+
+function updateProgress(stage, message, extra = {}) {
+  if (!PROGRESS_PATH) {
+    return;
+  }
+
+  const payload = {
+    updated_at: new Date().toISOString(),
+    script: TARGET_PAGE,
+    stage,
+    message,
+    target_page: TARGET_PAGE,
+    ...extra,
+  };
+
+  fs.mkdirSync(path.dirname(PROGRESS_PATH), { recursive: true });
+  fs.writeFileSync(PROGRESS_PATH, JSON.stringify(payload, null, 2));
+}
+
+function buildContextOptions() {
+  const options = {
+    viewport: { width: 1440, height: 960 },
+  };
+
+  if (fs.existsSync(STORAGE_STATE_PATH)) {
+    options.storageState = STORAGE_STATE_PATH;
+  }
+
+  return options;
+}
+
+function runHook(command, eventName) {
+  if (!command) {
+    return Promise.resolve();
+  }
+
+  log(`[hook] ${eventName}: ${command}`);
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, {
+      shell: true,
+      stdio: "inherit",
+      env: {
+        ...process.env,
+        HVCS_HOOK_EVENT: eventName,
+      },
+    });
+
+    child.on("error", reject);
+    child.on("exit", (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+
+      reject(new Error(`Hook failed for ${eventName} with exit code ${code}`));
+    });
+  });
 }
 
 async function waitForEnter(prompt) {
@@ -278,7 +342,7 @@ async function pageLooksLikeTarget(page) {
   if (TARGET_PAGE === "power_analyze" || TARGET_PAGE === "power_analyze_month") {
     return pageLooksLikePowerAnalyze(page);
   }
-  if (TARGET_PAGE === "all") {
+  if (TARGET_PAGE === "all" || TARGET_PAGE === "all_month") {
     return pageLooksLikeBasic(page);
   }
   if (TARGET_PAGE === "energy_usage") {
@@ -492,6 +556,18 @@ async function saveState(context, page) {
   fs.mkdirSync(AUTH_DIR, { recursive: true });
   await waitForPageSettled(page);
   await context.storageState({ path: STORAGE_STATE_PATH });
+  updateProgress("auth_saved", "Saved browser session state.", {
+    storage_state_path: STORAGE_STATE_PATH,
+  });
+}
+
+async function refreshSavedState(context, page, reason) {
+  await saveState(context, page);
+  updateProgress("auth_state_refreshed", `Refreshed saved auth state after ${reason}.`, {
+    storage_state_path: STORAGE_STATE_PATH,
+    page_url: page.url(),
+    reason,
+  });
 }
 
 async function waitForAuthenticationTransition(context, initialPage, timeoutMs = AUTH_TIMEOUT_MS) {
@@ -569,12 +645,19 @@ async function waitForTargetTransition(context, initialPage, startUrl, startText
 }
 
 async function ensureAuthenticated(context, page) {
+  updateProgress("checking_auth", "Checking whether saved auth is still valid.");
   if (await waitForAuthenticated(page)) {
+    updateProgress("auth_reused", "Saved auth is valid.", {
+      page_url: page.url(),
+    });
     return page;
   }
 
   log("Saved session is not authenticated.");
   log("A browser window will stay open so you can complete the HVCS login and captcha.");
+  updateProgress("auth_required", "Saved auth is invalid; waiting for manual captcha/login.", {
+    page_url: page.url(),
+  });
 
   const accountFilled = await fillIfVisible(
     page,
@@ -596,6 +679,7 @@ async function ensureAuthenticated(context, page) {
     log("Focused captcha input. Enter captcha in the browser to continue.");
   }
 
+  await runHook(AUTH_REQUIRED_HOOK, "auth_required");
   log("Complete the remaining login steps in the browser.");
   log("The script will continue automatically after login succeeds.");
 
@@ -614,6 +698,10 @@ async function ensureAuthenticated(context, page) {
   }
 
   await saveState(context, page);
+  await runHook(AUTH_RESOLVED_HOOK, "auth_resolved");
+  updateProgress("auth_refreshed", "Manual login completed and auth was refreshed.", {
+    page_url: page.url(),
+  });
   log(`Updated saved session at ${STORAGE_STATE_PATH}`);
   return page;
 }
@@ -836,7 +924,7 @@ async function navigateToTarget(context, page) {
     return profilePage || page;
   }
 
-  if (TARGET_PAGE === "all") {
+  if (TARGET_PAGE === "all" || TARGET_PAGE === "all_month") {
     await page.goto(`https://service.taipower.com.tw${BASIC_PATH}`, {
       waitUntil: "domcontentloaded",
     });
@@ -1874,8 +1962,12 @@ function writeOutputJson(fileName, payload) {
 
 function writeArtifactJson(pathParts, payload) {
   const artifactPath = path.join(ARTIFACTS_DIR, ...pathParts);
+  const enrichedPayload = {
+    updated_at: new Date().toISOString(),
+    ...payload,
+  };
   fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
-  fs.writeFileSync(artifactPath, JSON.stringify(payload, null, 2));
+  fs.writeFileSync(artifactPath, JSON.stringify(enrichedPayload, null, 2));
   return artifactPath;
 }
 
@@ -1957,6 +2049,96 @@ function buildPowerAnalyzeMonthArtifactPath(electricNumber, targetMonth) {
   const yyyy = String(targetMonth.year).padStart(4, "0");
   const mm = String(targetMonth.month).padStart(2, "0");
   return ["hvcs-power-analyze-month", resolveArtifactElectricNumber(electricNumber), `${yyyy}-${mm}.json`];
+}
+
+async function saveBasicAllArtifact(page, context) {
+  await openBasicTab(page, USER_PROFILE_TEXT);
+  const basicTables = await extractBasicSections(page);
+  const electricNumber = await detectCurrentElectricNumber(page);
+
+  await openBasicTab(page, ENERGY_USAGE_TEXT);
+  const selectedYearFromEnergyUsage = await detectSelectedYear(page);
+  const energyUsageExtracted = await extractSingleSectionTableByHints(page, "用電紀錄", [
+    "電費月份",
+    "最高需量",
+    "用電",
+    "尖峰",
+    "半尖峰",
+    "離峰",
+  ]);
+  const energyUsageTables = aggregateEnergyUsageSections(energyUsageExtracted);
+
+  await openBasicTab(page, PRICE_RECORD_TEXT);
+  const selectedYearFromPrice = await detectSelectedYear(page);
+  const priceTables = await extractSingleSectionTableByHints(page, "電費紀錄", [
+    "電費月份",
+    "基本電費",
+    "流動電費",
+    "總額",
+  ]);
+  const selectedYear =
+    selectedYearFromEnergyUsage ||
+    selectedYearFromPrice ||
+    String(new Date().getFullYear());
+  const artifactPath = writeArtifactJson(
+    buildBasicAllArtifactPath(electricNumber, selectedYear),
+    {
+      basic: basicTables,
+      energy_usage: energyUsageTables,
+      price: priceTables,
+    }
+  );
+
+  await refreshSavedState(context, page, "basic-all artifact save");
+  return artifactPath;
+}
+
+async function savePowerAnalyzeMonthArtifact(page, context) {
+  await ensurePowerAnalyzeFifteenMin(page);
+
+  const targetMonth = parseTargetMonth();
+  const electricNumber = await detectCurrentElectricNumber(page);
+  const monthDates = listMonthDates(targetMonth.year, targetMonth.month);
+  const daily = [];
+
+  for (const dateInfo of monthDates) {
+    log(`Querying PowerAnalyze: ${dateInfo.slashDate}`);
+    updateProgress("querying_month_day", `Querying PowerAnalyze for ${dateInfo.slashDate}.`, {
+      current_date: dateInfo.slashDate,
+    });
+    const rendered = await runPowerAnalyzeQueryByDate(page, dateInfo);
+    const chartData = rendered ? await collectCycleRawChartData(page) : [];
+    const organizedSeries = rendered
+      ? buildPowerAnalyzeSeriesData(chartData)
+      : { series: [] };
+    daily.push({
+      target_date: {
+        gregorian: dateInfo.slashDate,
+        roc: dateInfo.rocDate,
+      },
+      series: organizedSeries.series,
+    });
+  }
+
+  const payload = {
+    section: "需量分析",
+    granularity: FIFTEEN_MIN_TEXT,
+    target_month: {
+      gregorian: `${targetMonth.year}/${String(targetMonth.month).padStart(2, "0")}`,
+      roc: `${targetMonth.year - 1911}/${String(targetMonth.month).padStart(2, "0")}`,
+    },
+    page_url: page.url(),
+    title: await page.title().catch(() => ""),
+    daily,
+  };
+
+  const artifactPath = writeArtifactJson(
+    buildPowerAnalyzeMonthArtifactPath(electricNumber, targetMonth),
+    payload
+  );
+
+  await refreshSavedState(context, page, "month artifact save");
+  return artifactPath;
 }
 
 function normalizeChartValues(data) {
@@ -2460,15 +2642,16 @@ async function writeArtifacts(payload) {
 }
 
 async function main() {
-  const context = await chromium.launchPersistentContext(USER_DATA_DIR, {
-    headless: false,
-    viewport: { width: 1440, height: 960 },
-  });
+  updateProgress("starting", "Launching HVCS extraction flow.");
+  const browser = await chromium.launch({ headless: false });
+  const context = await browser.newContext(buildContextOptions());
 
   try {
-    const page = context.pages()[0] || (await context.newPage());
+    const page = await context.newPage();
     const authenticatedPage = await ensureAuthenticated(context, page);
+    updateProgress("navigating", "Authenticated. Navigating to target page.");
     const targetPage = await navigateToTarget(context, authenticatedPage);
+    await refreshSavedState(context, targetPage, "target navigation");
 
     if (TARGET_PAGE === "cycle") {
       if (!(await pageLooksLikeCycle(targetPage))) {
@@ -2548,51 +2731,19 @@ async function main() {
         payload
       );
 
+      await refreshSavedState(context, targetPage, "day artifact save");
+      updateProgress("completed", "Saved day artifact.", {
+        artifact_path: artifactPath,
+      });
       log(`Saved artifact JSON: ${artifactPath}`);
       return;
     }
 
     if (TARGET_PAGE === "power_analyze_month") {
-      await ensurePowerAnalyzeFifteenMin(targetPage);
-
-      const targetMonth = parseTargetMonth();
-      const electricNumber = await detectCurrentElectricNumber(targetPage);
-      const monthDates = listMonthDates(targetMonth.year, targetMonth.month);
-      const daily = [];
-
-      for (const dateInfo of monthDates) {
-        log(`Querying PowerAnalyze: ${dateInfo.slashDate}`);
-        const rendered = await runPowerAnalyzeQueryByDate(targetPage, dateInfo);
-        const chartData = rendered ? await collectCycleRawChartData(targetPage) : [];
-        const organizedSeries = rendered
-          ? buildPowerAnalyzeSeriesData(chartData)
-          : { series: [] };
-        daily.push({
-          target_date: {
-            gregorian: dateInfo.slashDate,
-            roc: dateInfo.rocDate,
-          },
-          series: organizedSeries.series,
-        });
-      }
-
-      const payload = {
-        section: "需量分析",
-        granularity: FIFTEEN_MIN_TEXT,
-        target_month: {
-          gregorian: `${targetMonth.year}/${String(targetMonth.month).padStart(2, "0")}`,
-          roc: `${targetMonth.year - 1911}/${String(targetMonth.month).padStart(2, "0")}`,
-        },
-        page_url: targetPage.url(),
-        title: await targetPage.title().catch(() => ""),
-        daily,
-      };
-
-      const artifactPath = writeArtifactJson(
-        buildPowerAnalyzeMonthArtifactPath(electricNumber, targetMonth),
-        payload
-      );
-
+      const artifactPath = await savePowerAnalyzeMonthArtifact(targetPage, context);
+      updateProgress("completed", "Saved month artifact.", {
+        artifact_path: artifactPath,
+      });
       log(`Saved artifact JSON: ${artifactPath}`);
       return;
     }
@@ -2624,44 +2775,37 @@ async function main() {
     }
 
     if (TARGET_PAGE === "all") {
-      await openBasicTab(targetPage, USER_PROFILE_TEXT);
-      const basicTables = await extractBasicSections(targetPage);
-      const electricNumber = await detectCurrentElectricNumber(targetPage);
+      const basicAllJsonPath = await saveBasicAllArtifact(targetPage, context);
+      updateProgress("completed", "Saved basic-all artifact.", {
+        artifact_path: basicAllJsonPath,
+      });
+      log(`Saved artifact JSON: ${basicAllJsonPath}`);
+      return;
+    }
 
-      await openBasicTab(targetPage, ENERGY_USAGE_TEXT);
-      const selectedYearFromEnergyUsage = await detectSelectedYear(targetPage);
-      const energyUsageExtracted = await extractSingleSectionTableByHints(targetPage, "用電紀錄", [
-        "電費月份",
-        "最高需量",
-        "用電",
-        "尖峰",
-        "半尖峰",
-        "離峰",
-      ]);
-      const energyUsageTables = aggregateEnergyUsageSections(energyUsageExtracted);
-
-      await openBasicTab(targetPage, PRICE_RECORD_TEXT);
-      const selectedYearFromPrice = await detectSelectedYear(targetPage);
-      const priceTables = await extractSingleSectionTableByHints(targetPage, "電費紀錄", [
-        "電費月份",
-        "基本電費",
-        "流動電費",
-        "總額",
-      ]);
-      const selectedYear =
-        selectedYearFromEnergyUsage ||
-        selectedYearFromPrice ||
-        String(new Date().getFullYear());
-      const basicAllJsonPath = writeArtifactJson(
-        buildBasicAllArtifactPath(electricNumber, selectedYear),
+    if (TARGET_PAGE === "all_month") {
+      const basicAllJsonPath = await saveBasicAllArtifact(targetPage, context);
+      updateProgress(
+        "combined_next",
+        "Basic-all artifact saved. Continuing to monthly PowerAnalyze in the same session.",
         {
-          basic: basicTables,
-          energy_usage: energyUsageTables,
-          price: priceTables,
+          basic_all_artifact_path: basicAllJsonPath,
         }
       );
-
       log(`Saved artifact JSON: ${basicAllJsonPath}`);
+
+      await targetPage.goto(`https://service.taipower.com.tw${POWER_ANALYZE_PATH}`, {
+        waitUntil: "domcontentloaded",
+      });
+      await waitForPageSettled(targetPage);
+      await refreshSavedState(context, targetPage, "power analyze month navigation");
+
+      const powerMonthArtifactPath = await savePowerAnalyzeMonthArtifact(targetPage, context);
+      updateProgress("completed", "Saved combined basic-all and month artifacts.", {
+        basic_all_artifact_path: basicAllJsonPath,
+        power_month_artifact_path: powerMonthArtifactPath,
+      });
+      log(`Saved artifact JSON: ${powerMonthArtifactPath}`);
       return;
     }
 
@@ -2699,11 +2843,12 @@ async function main() {
       log(`Saved cleaned JSON: ${CLEAN_OUTPUT_PATH}`);
     }
   } finally {
-    await context.close();
+    await browser.close();
   }
 }
 
 main().catch((error) => {
+  updateProgress("failed", error.message);
   process.stderr.write(`${error.message}\n`);
   process.exitCode = 1;
 });

@@ -1,4 +1,4 @@
 interface:
   display_name: "HVCS Basic All"
-  short_description: "Run repo-local basic:all export"
-  default_prompt: "Use this skill to run npm run basic:all in this repository and verify artifacts/hvcs-basic-all/<electric-number>/<selected-year>.json."
+  short_description: "Run basic:all with live progress"
+  default_prompt: "Use this skill to run npm run hvcs:basic:all in this repository, report live progress from npm run hvcs:watch or the newest logs/headless/*.progress.json file, and verify artifacts/hvcs-basic-all/<electric-number>/<selected-year>.json."

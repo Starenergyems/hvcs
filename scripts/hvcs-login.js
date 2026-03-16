@@ -1,15 +1,18 @@
 const fs = require("fs");
 const path = require("path");
 const readline = require("readline");
+const { spawn } = require("child_process");
 const { chromium } = require("playwright");
 
 const ENV_PATH = path.resolve(__dirname, "..", ".env");
 const LOGIN_URL = "https://service.taipower.com.tw/hvcs/";
 const LOGIN_PATH_FRAGMENT = "/Account/NewLogon";
 const AUTH_DIR = path.resolve(__dirname, "..", ".auth");
-const USER_DATA_DIR = path.join(AUTH_DIR, "browser-profile");
 const STORAGE_STATE_PATH = path.join(AUTH_DIR, "storage-state.json");
 const AUTH_TIMEOUT_MS = Number(process.env.HVCS_AUTH_TIMEOUT_MS || 180000);
+const AUTH_REQUIRED_HOOK = (process.env.HVCS_AUTH_REQUIRED_HOOK || "").trim();
+const AUTH_RESOLVED_HOOK = (process.env.HVCS_AUTH_RESOLVED_HOOK || "").trim();
+const PROGRESS_PATH = (process.env.HVCS_PROGRESS_PATH || "").trim();
 
 const CANDIDATE_SUCCESS_TEXT = ["登出", "登    出", "會員專區", "用電資料查詢"];
 const ACCOUNT_SELECTOR =
@@ -23,6 +26,64 @@ loadEnvFile();
 
 function log(message) {
   process.stdout.write(`${message}\n`);
+}
+
+function updateProgress(stage, message, extra = {}) {
+  if (!PROGRESS_PATH) {
+    return;
+  }
+
+  const payload = {
+    updated_at: new Date().toISOString(),
+    script: "login",
+    stage,
+    message,
+    ...extra,
+  };
+
+  fs.mkdirSync(path.dirname(PROGRESS_PATH), { recursive: true });
+  fs.writeFileSync(PROGRESS_PATH, JSON.stringify(payload, null, 2));
+}
+
+function buildContextOptions() {
+  const options = {
+    viewport: { width: 1440, height: 960 },
+  };
+
+  if (fs.existsSync(STORAGE_STATE_PATH)) {
+    options.storageState = STORAGE_STATE_PATH;
+  }
+
+  return options;
+}
+
+function runHook(command, eventName) {
+  if (!command) {
+    return Promise.resolve();
+  }
+
+  log(`[hook] ${eventName}: ${command}`);
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, {
+      shell: true,
+      stdio: "inherit",
+      env: {
+        ...process.env,
+        HVCS_HOOK_EVENT: eventName,
+      },
+    });
+
+    child.on("error", reject);
+    child.on("exit", (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+
+      reject(new Error(`Hook failed for ${eventName} with exit code ${code}`));
+    });
+  });
 }
 
 async function waitForEnter(prompt) {
@@ -194,22 +255,26 @@ async function saveState(context, page) {
   fs.mkdirSync(AUTH_DIR, { recursive: true });
   await waitForPageSettled(page);
   await context.storageState({ path: STORAGE_STATE_PATH });
+  updateProgress("auth_saved", "Saved browser session state.", {
+    storage_state_path: STORAGE_STATE_PATH,
+  });
 }
 
 async function main() {
   fs.mkdirSync(AUTH_DIR, { recursive: true });
+  updateProgress("starting", "Launching HVCS login browser.");
 
-  const context = await chromium.launchPersistentContext(USER_DATA_DIR, {
-    headless: false,
-    viewport: { width: 1440, height: 960 },
-  });
+  const browser = await chromium.launch({ headless: false });
+  const context = await browser.newContext(buildContextOptions());
 
-  let page = context.pages()[0] || (await context.newPage());
+  let page = await context.newPage();
   await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" });
   await waitForPageSettled(page);
+  updateProgress("login_page_opened", "HVCS login page opened.", {
+    page_url: page.url(),
+  });
 
   log("Taipower HVCS login page opened.");
-  log(`Persistent browser profile: ${USER_DATA_DIR}`);
   log(`Storage state output: ${STORAGE_STATE_PATH}`);
 
   const accountFilled = await fillIfVisible(
@@ -232,6 +297,10 @@ async function main() {
     log("Focused captcha input. Enter captcha in the browser to continue.");
   }
 
+  updateProgress("waiting_for_captcha", "Waiting for manual captcha/login completion.", {
+    page_url: page.url(),
+  });
+  await runHook(AUTH_REQUIRED_HOOK, "auth_required");
   log("Complete the remaining login steps in the browser.");
   log("This site shows a captcha on the login page, so a human needs to finish authentication.");
   log("The script will continue automatically after login succeeds.");
@@ -247,19 +316,27 @@ async function main() {
   }
 
   if (!(await pageLooksAuthenticated(page))) {
+    updateProgress("auth_failed", "Login did not complete successfully.", {
+      page_url: page.url(),
+    });
     throw new Error(
       "Still on the login page. Login state was not saved. Confirm the captcha/login succeeded and rerun."
     );
   }
 
   await saveState(context, page);
+  await runHook(AUTH_RESOLVED_HOOK, "auth_resolved");
+  updateProgress("completed", "Authentication detected and saved.", {
+    page_url: page.url(),
+  });
 
   log("Authentication detected and saved.");
-  log("You can reuse the browser profile or the Playwright storage state in later scripts.");
-  await context.close();
+  log("You can reuse the Playwright storage state in later scripts.");
+  await browser.close();
 }
 
 main().catch((error) => {
+  updateProgress("failed", error.message);
   process.stderr.write(`${error.message}\n`);
   process.exitCode = 1;
 });

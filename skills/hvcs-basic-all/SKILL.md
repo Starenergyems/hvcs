@@ -6,17 +6,24 @@ description: Run the repository-local HVCS one-shot extraction flow that navigat
 # HVCS Basic All
 
 ## Overview
-Run `npm run basic:all` in this repository, then verify `artifacts/hvcs-basic-all/<electric-number>/<selected-year>.json` contains only the three required datasets: `basic`, `energy_usage`, and `price`.
+Run `npm run hvcs:basic:all` in this repository, monitor live progress from `logs/headless/*.progress.json` or `npm run hvcs:watch`, and then verify `artifacts/hvcs-basic-all/<electric-number>/<selected-year>.json` contains only the three required datasets: `basic`, `energy_usage`, and `price`.
 
 ## Workflow
-1. Confirm working directory is this repo (`/home/ubuntu24/hvcs-login`).
-2. Run `npm run basic:all`.
-3. Wait for manual browser steps when login/captcha is required.
-4. Verify `artifacts/hvcs-basic-all/<electric-number>/<selected-year>.json` exists.
-5. Validate JSON shape:
+1. Confirm working directory is this repo (`/home/ubuntu/wt-hvcs-headless/hvcs-headless`).
+2. Run `npm run hvcs:basic:all`.
+3. Immediately follow live progress with `npm run hvcs:watch` or by reading the newest `logs/headless/*.progress.json` file and report stage changes back to the user while the run is active.
+4. If progress reaches `auth_required`, tell the user to connect to the temporary noVNC session, complete captcha/login, and let the run continue.
+5. Verify `artifacts/hvcs-basic-all/<electric-number>/<selected-year>.json` exists.
+6. Validate JSON shape:
+- top-level key `updated_at` is an ISO-8601 UTC timestamp for the latest artifact write
 - top-level keys: `basic`, `energy_usage`, `price`
 - each key maps to an array
 - no extra top-level keys unless explicitly requested by the user
+
+## Live Progress
+- Prefer reporting progress from the structured progress file over parsing plain-text logs.
+- Important stages to relay: `starting`, `xvfb_ready`, `checking_auth`, `auth_required`, `auth_refreshed`, `navigating`, `completed`, `failed`
+- If the run is using the combined flow or any future multi-step flow, also relay intermediate stages like `combined_next` and `querying_month_day`.
 
 ## Validation Checks
 After running, inspect `artifacts/hvcs-basic-all/<electric-number>/<selected-year>.json` and confirm:
@@ -28,7 +35,7 @@ After running, inspect `artifacts/hvcs-basic-all/<electric-number>/<selected-yea
 If the user reports field mismatches:
 1. Recheck whether the source row is affected by merged cells (`rowspan`/`colspan`).
 2. Update extraction normalization in `scripts/extract-dashboard.js`.
-3. Re-run `npm run basic:all` and compare output against the reported row.
+3. Re-run `npm run hvcs:basic:all` and compare output against the reported row.
 
 ## Output Contract
 Primary artifact:

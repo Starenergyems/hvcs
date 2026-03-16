@@ -1,0 +1,4 @@
+interface:
+  display_name: "HVCS All"
+  short_description: "Run combined flow with live progress"
+  default_prompt: "Use this skill to run npm run hvcs:all in this repository, report live progress from npm run hvcs:watch or the newest logs/headless/*.progress.json file, and verify both artifacts from the single-session basic:all plus monthly PowerAnalyze flow."
