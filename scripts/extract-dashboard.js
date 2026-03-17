@@ -23,8 +23,12 @@ const TARGET_BASENAME =
       ? "all"
     : TARGET_PAGE === "all_month"
       ? "all-month"
+    : TARGET_PAGE === "all_range"
+      ? "all-range"
     : TARGET_PAGE === "power_analyze_month"
       ? "power-analyze-month"
+    : TARGET_PAGE === "power_analyze_range"
+      ? "power-analyze-range"
     : TARGET_PAGE === "power_analyze"
       ? "power-analyze"
     : TARGET_PAGE === "price"
@@ -343,10 +347,14 @@ async function pageLooksLikeTarget(page) {
   if (TARGET_PAGE === "cycle") {
     return pageLooksLikeCycle(page);
   }
-  if (TARGET_PAGE === "power_analyze" || TARGET_PAGE === "power_analyze_month") {
+  if (
+    TARGET_PAGE === "power_analyze" ||
+    TARGET_PAGE === "power_analyze_month" ||
+    TARGET_PAGE === "power_analyze_range"
+  ) {
     return pageLooksLikePowerAnalyze(page);
   }
-  if (TARGET_PAGE === "all" || TARGET_PAGE === "all_month") {
+  if (TARGET_PAGE === "all" || TARGET_PAGE === "all_month" || TARGET_PAGE === "all_range") {
     return pageLooksLikeBasic(page);
   }
   if (TARGET_PAGE === "energy_usage") {
@@ -954,7 +962,7 @@ async function navigateToTarget(context, page) {
     return profilePage || page;
   }
 
-  if (TARGET_PAGE === "all" || TARGET_PAGE === "all_month") {
+  if (TARGET_PAGE === "all" || TARGET_PAGE === "all_month" || TARGET_PAGE === "all_range") {
     await page.goto(`https://service.taipower.com.tw${BASIC_PATH}`, {
       waitUntil: "domcontentloaded",
     });
@@ -1695,6 +1703,55 @@ function parseTargetMonth() {
   };
 }
 
+function parseExactPowerAnalyzeDate(rawValue, envName) {
+  const raw = normalizeText(rawValue || "");
+  const match = raw.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+  if (!match) {
+    throw new Error(`${envName} must use YYYY-MM-DD format.`);
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const candidate = new Date(year, month - 1, day);
+  candidate.setHours(0, 0, 0, 0);
+
+  if (
+    Number.isNaN(candidate.getTime()) ||
+    candidate.getFullYear() !== year ||
+    candidate.getMonth() !== month - 1 ||
+    candidate.getDate() !== day
+  ) {
+    throw new Error(`${envName} is not a valid calendar date.`);
+  }
+
+  const yesterday = new Date();
+  yesterday.setHours(0, 0, 0, 0);
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (candidate.getTime() > yesterday.getTime()) {
+    throw new Error(`${envName} cannot be later than yesterday.`);
+  }
+
+  return buildDateInfo(year, month, day);
+}
+
+function parseTargetPowerAnalyzeRange() {
+  const start = parseExactPowerAnalyzeDate(
+    process.env.HVCS_POWER_ANALYZE_START_DATE || "",
+    "HVCS_POWER_ANALYZE_START_DATE"
+  );
+  const end = parseExactPowerAnalyzeDate(
+    process.env.HVCS_POWER_ANALYZE_END_DATE || "",
+    "HVCS_POWER_ANALYZE_END_DATE"
+  );
+
+  if (start.isoDate > end.isoDate) {
+    throw new Error("HVCS_POWER_ANALYZE_START_DATE cannot be later than HVCS_POWER_ANALYZE_END_DATE.");
+  }
+
+  return { start, end };
+}
+
 function buildDateInfo(year, month, day) {
   const yyyy = String(year).padStart(4, "0");
   const mm = String(month).padStart(2, "0");
@@ -1720,6 +1777,21 @@ function listMonthDates(year, month) {
     }
     result.push(buildDateInfo(year, month, day));
   }
+  return result;
+}
+
+function listDateRange(startDateInfo, endDateInfo) {
+  const result = [];
+  const cursor = new Date(startDateInfo.isoDate);
+  const end = new Date(endDateInfo.isoDate);
+
+  while (cursor.getTime() <= end.getTime()) {
+    result.push(
+      buildDateInfo(cursor.getFullYear(), cursor.getMonth() + 1, cursor.getDate())
+    );
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
   return result;
 }
 
@@ -2106,6 +2178,14 @@ function buildPowerAnalyzeMonthArtifactPath(electricNumber, targetMonth) {
   return ["hvcs-power-analyze-month", resolveArtifactElectricNumber(electricNumber), `${yyyy}-${mm}.json`];
 }
 
+function buildPowerAnalyzeRangeArtifactPath(electricNumber, startDateInfo, endDateInfo) {
+  return [
+    "hvcs-power-analyze-range",
+    resolveArtifactElectricNumber(electricNumber),
+    `${startDateInfo.isoDate}_to_${endDateInfo.isoDate}.json`,
+  ];
+}
+
 async function saveBasicAllArtifact(page, context) {
   await openBasicTab(page, USER_PROFILE_TEXT);
   const basicTables = await extractBasicSections(page);
@@ -2208,6 +2288,81 @@ async function savePowerAnalyzeMonthArtifact(page, context) {
   const artifactPath = await writeMonthArtifact();
 
   await refreshSavedState(context, page, "month artifact save");
+  return artifactPath;
+}
+
+async function savePowerAnalyzeRangeArtifact(page, context) {
+  await ensurePowerAnalyzeFifteenMin(page);
+
+  const targetRange = parseTargetPowerAnalyzeRange();
+  const electricNumber = await detectCurrentElectricNumber(page);
+  const rangeDates = listDateRange(targetRange.start, targetRange.end);
+  const daily = [];
+  const artifactPathParts = buildPowerAnalyzeRangeArtifactPath(
+    electricNumber,
+    targetRange.start,
+    targetRange.end
+  );
+
+  const writeRangeArtifact = async () => {
+    const payload = {
+      section: "需量分析",
+      granularity: FIFTEEN_MIN_TEXT,
+      target_range: {
+        start_date: {
+          gregorian: targetRange.start.slashDate,
+          roc: targetRange.start.rocDate,
+        },
+        end_date: {
+          gregorian: targetRange.end.slashDate,
+          roc: targetRange.end.rocDate,
+        },
+      },
+      page_url: page.url(),
+      title: await page.title().catch(() => ""),
+      daily,
+    };
+
+    return writeArtifactJson(artifactPathParts, payload);
+  };
+
+  for (const dateInfo of rangeDates) {
+    log(`Querying PowerAnalyze: ${dateInfo.slashDate}`);
+    updateProgress("querying_range_day", `Querying PowerAnalyze for ${dateInfo.slashDate}.`, {
+      current_date: dateInfo.slashDate,
+      range_start_date: targetRange.start.slashDate,
+      range_end_date: targetRange.end.slashDate,
+    });
+    try {
+      const rendered = await runPowerAnalyzeQueryByDateWithTimeout(page, dateInfo);
+      const chartData = rendered ? await collectCycleRawChartData(page) : [];
+      const organizedSeries = rendered
+        ? buildPowerAnalyzeSeriesData(chartData)
+        : { series: [] };
+      daily.push({
+        target_date: {
+          gregorian: dateInfo.slashDate,
+          roc: dateInfo.rocDate,
+        },
+        series: organizedSeries.series,
+      });
+    } catch (error) {
+      log(`PowerAnalyze query failed for ${dateInfo.slashDate}: ${error.message}`);
+      daily.push({
+        target_date: {
+          gregorian: dateInfo.slashDate,
+          roc: dateInfo.rocDate,
+        },
+        series: [],
+      });
+    }
+
+    await writeRangeArtifact();
+  }
+
+  const artifactPath = await writeRangeArtifact();
+
+  await refreshSavedState(context, page, "range artifact save");
   return artifactPath;
 }
 
@@ -2818,6 +2973,15 @@ async function main() {
       return;
     }
 
+    if (TARGET_PAGE === "power_analyze_range") {
+      const artifactPath = await savePowerAnalyzeRangeArtifact(targetPage, context);
+      updateProgress("completed", "Saved range artifact.", {
+        artifact_path: artifactPath,
+      });
+      log(`Saved artifact JSON: ${artifactPath}`);
+      return;
+    }
+
     if (TARGET_PAGE === "basic") {
       const payload = await extractBasicSections(targetPage);
 
@@ -2876,6 +3040,32 @@ async function main() {
         power_month_artifact_path: powerMonthArtifactPath,
       });
       log(`Saved artifact JSON: ${powerMonthArtifactPath}`);
+      return;
+    }
+
+    if (TARGET_PAGE === "all_range") {
+      const basicAllJsonPath = await saveBasicAllArtifact(targetPage, context);
+      updateProgress(
+        "combined_next",
+        "Basic-all artifact saved. Continuing to exact-range PowerAnalyze in the same session.",
+        {
+          basic_all_artifact_path: basicAllJsonPath,
+        }
+      );
+      log(`Saved artifact JSON: ${basicAllJsonPath}`);
+
+      await targetPage.goto(`https://service.taipower.com.tw${POWER_ANALYZE_PATH}`, {
+        waitUntil: "domcontentloaded",
+      });
+      await waitForPageSettled(targetPage);
+      await refreshSavedState(context, targetPage, "power analyze range navigation");
+
+      const powerRangeArtifactPath = await savePowerAnalyzeRangeArtifact(targetPage, context);
+      updateProgress("completed", "Saved combined basic-all and range artifacts.", {
+        basic_all_artifact_path: basicAllJsonPath,
+        power_range_artifact_path: powerRangeArtifactPath,
+      });
+      log(`Saved artifact JSON: ${powerRangeArtifactPath}`);
       return;
     }
 

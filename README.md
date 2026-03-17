@@ -287,11 +287,29 @@ Optional target month (default is yesterday's month):
 HVCS_POWER_ANALYZE_MONTH=2026-03 npm run open:power-analyze-month
 ```
 
+To iterate an exact date range on `需量分析 (PowerAnalyze) -> 每15分鐘` and save all daily series into `artifacts/hvcs-power-analyze-range/<electric-number>/<start>_to_<end>.json`:
+
+```bash
+HVCS_POWER_ANALYZE_START_DATE=2026-01-31 \
+HVCS_POWER_ANALYZE_END_DATE=2026-02-27 \
+npm run open:power-analyze-range
+```
+
 To run `用戶資料 + 用電紀錄 + 電費紀錄` in one shot and save:
 - `artifacts/hvcs-basic-all/<electric-number>/<selected-year>.json`
 
 ```bash
 npm run basic:all
+```
+
+To run `用戶資料 + 用電紀錄 + 電費紀錄` first and then extract an exact `需量分析 (PowerAnalyze) -> 每15分鐘` date range in the same session, saving both artifacts:
+- `artifacts/hvcs-basic-all/<electric-number>/<selected-year>.json`
+- `artifacts/hvcs-power-analyze-range/<electric-number>/<YYYY-MM-DD>_to_<YYYY-MM-DD>.json`
+
+```bash
+HVCS_POWER_ANALYZE_START_DATE=2026-01-31 \
+HVCS_POWER_ANALYZE_END_DATE=2026-02-27 \
+npm run open:all-range
 ```
 
 To inspect navigation behavior manually (dashboard -> cycle) and save request/response trace metadata:
@@ -307,6 +325,7 @@ Managed skill artifacts are written to:
 - `artifacts/hvcs-basic-all/<electric-number>/<selected-year>.json`
 - `artifacts/hvcs-power-analyze-day/<electric-number>/<YYYY-MM-DD>.json`
 - `artifacts/hvcs-power-analyze-month/<electric-number>/<YYYY-MM>.json`
+- `artifacts/hvcs-power-analyze-range/<electric-number>/<YYYY-MM-DD>_to_<YYYY-MM-DD>.json`
 
 Other non-skill debug outputs are still written to:
 

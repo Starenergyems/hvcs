@@ -39,7 +39,7 @@ case "${RUN_MODE}" in
 esac
 
 case "${1:-}" in
-  basic:all|open:all-month|open:power-analyze|open:power-analyze-month|login|extract:dashboard|open:cycle|open:basic|open:energy_usage|open:price)
+  basic:all|open:all-month|open:all-range|open:power-analyze|open:power-analyze-month|open:power-analyze-range|login|extract:dashboard|open:cycle|open:basic|open:energy_usage|open:price)
     NPM_SCRIPT="$1"
     shift
     ;;
@@ -52,12 +52,14 @@ Supported npm scripts:
   extract:dashboard
   basic:all
   open:all-month
+  open:all-range
   open:cycle
   open:basic
   open:energy_usage
   open:price
   open:power-analyze
   open:power-analyze-month
+  open:power-analyze-range
 EOF
     exit 1
     ;;
