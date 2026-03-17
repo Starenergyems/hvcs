@@ -118,6 +118,8 @@ npm run hvcs:login
 
 When captcha/login is required, connect through noVNC, finish login, and let the wrapper tear the remote-view stack down automatically after auth is saved.
 
+In `--mode=headless`, that remote-view teardown only affects noVNC/x11vnc/openbox. The browser automation itself keeps running in Xvfb after auth is saved and continues the extraction flow.
+
 ### 5) Run extraction jobs on EC2
 
 ```bash
@@ -168,6 +170,8 @@ If a scheduled job is redirected back to login, rerun the same wrapper command i
 - `--mode=headless` runs the same browser flow inside Xvfb.
 - Remote viewing is started only on auth fallback.
 - The wrapper tears remote viewing down automatically on success or failure.
+- In `--mode=headless`, after auth is resolved the wrapper stops the temporary noVNC/x11vnc/openbox stack to save resources, but the browser automation continues inside Xvfb.
+- In `--mode=headed`, there is no noVNC teardown step because the flow is already running on the existing desktop session; after auth is resolved, the browser just keeps going in that same headed desktop session.
 
 ## Install
 

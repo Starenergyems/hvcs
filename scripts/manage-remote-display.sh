@@ -35,6 +35,37 @@ is_running() {
   [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null
 }
 
+kill_matching_processes() {
+  local pattern="$1"
+  local label="$2"
+  local pids=()
+  local pid
+
+  while IFS= read -r pid; do
+    [[ -n "${pid}" ]] && pids+=("${pid}")
+  done < <(pgrep -f "${pattern}" || true)
+
+  if [[ ${#pids[@]} -eq 0 ]]; then
+    return 0
+  fi
+
+  kill "${pids[@]}" 2>/dev/null || true
+  sleep 1
+
+  local survivors=()
+  for pid in "${pids[@]}"; do
+    if is_running "${pid}"; then
+      survivors+=("${pid}")
+    fi
+  done
+
+  if [[ ${#survivors[@]} -gt 0 ]]; then
+    kill -9 "${survivors[@]}" 2>/dev/null || true
+  fi
+
+  log "cleared stale ${label} pid(s): ${pids[*]}"
+}
+
 find_display_pid() {
   pgrep -f "^Xvfb ${DISPLAY_VALUE} -screen 0 1440x960x24 -ac$" | head -n 1 || true
 }
@@ -156,6 +187,10 @@ cleanup_stale() {
       rm -f "$(pid_file "${name}")"
     fi
   done
+
+  kill_matching_processes "(^|/)node .*scripts/extract-dashboard\\.js([[:space:]]|$)" "extract-dashboard"
+  kill_matching_processes "(^|/)node .*scripts/hvcs-login\\.js([[:space:]]|$)" "hvcs-login"
+  kill_matching_processes "/chrome-linux64/chrome .*--user-data-dir=/tmp/playwright_chromiumdev_profile-" "playwright chromium"
 
   stop_remote_view
 

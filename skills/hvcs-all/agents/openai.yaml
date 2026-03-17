@@ -1,4 +1,4 @@
 interface:
   display_name: "HVCS All"
   short_description: "Run combined flow with live progress"
-  default_prompt: "Use this skill to run npm run hvcs:all in this repository, report live progress from npm run hvcs:watch or the newest logs/headless/*.progress.json file, and verify both artifacts from the single-session basic:all plus monthly PowerAnalyze flow."
+  default_prompt: "Use this skill to run npm run hvcs:all in this repository, request escalated execution first because the flow launches Xvfb, Chromium, x11vnc, and noVNC, proactively report live progress from npm run hvcs:watch or the newest logs/headless/*.progress.json file while the run is active, and if auth_required appears tell the user to run ssh -L 6080:localhost:6080 ubuntu@<ec2-host> and open http://localhost:6080/vnc.html?autoconnect=1&resize=remote before verifying both artifacts from the single-session basic:all plus monthly PowerAnalyze flow."

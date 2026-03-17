@@ -49,6 +49,10 @@ const FIFTEEN_MIN_TEXT = "每15分鐘";
 const AUTH_TIMEOUT_MS = Number(process.env.HVCS_AUTH_TIMEOUT_MS || 180000);
 const ELECTRIC_SELECTION_TIMEOUT_MS = Number(process.env.HVCS_ELECTRIC_SELECTION_TIMEOUT_MS || 120000);
 const DASHBOARD_LOAD_TIMEOUT_MS = Number(process.env.HVCS_DASHBOARD_TIMEOUT_MS || 120000);
+const BASE_NAVIGATION_TIMEOUT_MS = Number(process.env.HVCS_BASE_NAVIGATION_TIMEOUT_MS || 120000);
+const BASE_NAVIGATION_RETRIES = Number(process.env.HVCS_BASE_NAVIGATION_RETRIES || 3);
+const BASE_NAVIGATION_RETRY_DELAY_MS = Number(process.env.HVCS_BASE_NAVIGATION_RETRY_DELAY_MS || 3000);
+const POWER_ANALYZE_DAY_TIMEOUT_MS = Number(process.env.HVCS_POWER_ANALYZE_DAY_TIMEOUT_MS || 240000);
 const MANUAL_CYCLE_MONITOR = /^(1|true|yes)$/i.test((process.env.HVCS_MANUAL_TO_CYCLE || "").trim());
 const DOMCONTENTLOADED_TIMEOUT_MS = Number(process.env.HVCS_DOMCONTENTLOADED_TIMEOUT_MS || 10000);
 const NETWORKIDLE_TIMEOUT_MS = Number(process.env.HVCS_NETWORKIDLE_TIMEOUT_MS || 5000);
@@ -432,8 +436,34 @@ async function promptForManualNavigation(page, targetDescription) {
   }
 }
 
+async function gotoBaseUrlWithRetry(page) {
+  let lastError;
+
+  for (let attempt = 1; attempt <= BASE_NAVIGATION_RETRIES; attempt += 1) {
+    try {
+      await page.goto(BASE_URL, {
+        waitUntil: "domcontentloaded",
+        timeout: BASE_NAVIGATION_TIMEOUT_MS,
+      });
+      return;
+    } catch (error) {
+      lastError = error;
+      const finalAttempt = attempt === BASE_NAVIGATION_RETRIES;
+      log(
+        `Initial HVCS navigation attempt ${attempt}/${BASE_NAVIGATION_RETRIES} failed: ${error.message}`
+      );
+      if (finalAttempt) {
+        break;
+      }
+      await page.waitForTimeout(BASE_NAVIGATION_RETRY_DELAY_MS);
+    }
+  }
+
+  throw lastError;
+}
+
 async function waitForAuthenticated(page) {
-  await page.goto(BASE_URL, { waitUntil: "domcontentloaded" });
+  await gotoBaseUrlWithRetry(page);
   await waitForPageSettled(page);
 
   if (await pageLooksUnauthenticated(page)) {
@@ -1717,6 +1747,31 @@ async function runPowerAnalyzeQueryByDate(page, dateInfo) {
   );
 }
 
+async function runPowerAnalyzeQueryByDateWithTimeout(page, dateInfo) {
+  let timeoutId;
+
+  try {
+    return await Promise.race([
+      runPowerAnalyzeQueryByDate(page, dateInfo),
+      new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(
+            new Error(
+              `PowerAnalyze query timed out after ${Math.round(
+                POWER_ANALYZE_DAY_TIMEOUT_MS / 1000
+              )} seconds for ${dateInfo.slashDate}`
+            )
+          );
+        }, POWER_ANALYZE_DAY_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
+}
+
 async function selectPowerAnalyzeYstdAndFifteenMin(page) {
   await ensurePowerAnalyzeFifteenMin(page);
   const targetDate = parseTargetPowerAnalyzeDate();
@@ -2100,42 +2155,57 @@ async function savePowerAnalyzeMonthArtifact(page, context) {
   const electricNumber = await detectCurrentElectricNumber(page);
   const monthDates = listMonthDates(targetMonth.year, targetMonth.month);
   const daily = [];
+  const artifactPathParts = buildPowerAnalyzeMonthArtifactPath(electricNumber, targetMonth);
+
+  const writeMonthArtifact = async () => {
+    const payload = {
+      section: "需量分析",
+      granularity: FIFTEEN_MIN_TEXT,
+      target_month: {
+        gregorian: `${targetMonth.year}/${String(targetMonth.month).padStart(2, "0")}`,
+        roc: `${targetMonth.year - 1911}/${String(targetMonth.month).padStart(2, "0")}`,
+      },
+      page_url: page.url(),
+      title: await page.title().catch(() => ""),
+      daily,
+    };
+
+    return writeArtifactJson(artifactPathParts, payload);
+  };
 
   for (const dateInfo of monthDates) {
     log(`Querying PowerAnalyze: ${dateInfo.slashDate}`);
     updateProgress("querying_month_day", `Querying PowerAnalyze for ${dateInfo.slashDate}.`, {
       current_date: dateInfo.slashDate,
     });
-    const rendered = await runPowerAnalyzeQueryByDate(page, dateInfo);
-    const chartData = rendered ? await collectCycleRawChartData(page) : [];
-    const organizedSeries = rendered
-      ? buildPowerAnalyzeSeriesData(chartData)
-      : { series: [] };
-    daily.push({
-      target_date: {
-        gregorian: dateInfo.slashDate,
-        roc: dateInfo.rocDate,
-      },
-      series: organizedSeries.series,
-    });
+    try {
+      const rendered = await runPowerAnalyzeQueryByDateWithTimeout(page, dateInfo);
+      const chartData = rendered ? await collectCycleRawChartData(page) : [];
+      const organizedSeries = rendered
+        ? buildPowerAnalyzeSeriesData(chartData)
+        : { series: [] };
+      daily.push({
+        target_date: {
+          gregorian: dateInfo.slashDate,
+          roc: dateInfo.rocDate,
+        },
+        series: organizedSeries.series,
+      });
+    } catch (error) {
+      log(`PowerAnalyze query failed for ${dateInfo.slashDate}: ${error.message}`);
+      daily.push({
+        target_date: {
+          gregorian: dateInfo.slashDate,
+          roc: dateInfo.rocDate,
+        },
+        series: [],
+      });
+    }
+
+    await writeMonthArtifact();
   }
 
-  const payload = {
-    section: "需量分析",
-    granularity: FIFTEEN_MIN_TEXT,
-    target_month: {
-      gregorian: `${targetMonth.year}/${String(targetMonth.month).padStart(2, "0")}`,
-      roc: `${targetMonth.year - 1911}/${String(targetMonth.month).padStart(2, "0")}`,
-    },
-    page_url: page.url(),
-    title: await page.title().catch(() => ""),
-    daily,
-  };
-
-  const artifactPath = writeArtifactJson(
-    buildPowerAnalyzeMonthArtifactPath(electricNumber, targetMonth),
-    payload
-  );
+  const artifactPath = await writeMonthArtifact();
 
   await refreshSavedState(context, page, "month artifact save");
   return artifactPath;
