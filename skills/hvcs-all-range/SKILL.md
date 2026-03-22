@@ -36,6 +36,12 @@ After running, confirm:
 - both artifact paths use the same electric number
 - the run did not require a second login between the `basic:all` and exact-range PowerAnalyze phases
 
+## Continuation Rule
+- If the same user request also asks for downstream work after extraction, do not stop at artifact verification.
+- Keep monitoring until the run reaches `completed`, then immediately continue into the requested follow-up work in the same turn.
+- Typical follow-up work includes bill inspection, settlement comparison, config sync, and plan updates.
+- Only stop early if there is a real blocker such as `auth_required`, a failed run, or missing artifacts.
+
 ## Output Contract
 Primary artifacts:
 - `artifacts/hvcs-basic-all/<electric-number>/<selected-year>.json`

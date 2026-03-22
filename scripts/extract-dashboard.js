@@ -2186,12 +2186,87 @@ function buildPowerAnalyzeRangeArtifactPath(electricNumber, startDateInfo, endDa
   ];
 }
 
+function parseTargetBasicAllYear() {
+  const raw = String(process.env.HVCS_BASIC_ALL_YEAR || "").trim();
+  if (!raw) return null;
+  if (!/^\d{4}$/.test(raw)) {
+    throw new Error(`Invalid HVCS_BASIC_ALL_YEAR: ${raw}. Expected YYYY.`);
+  }
+  const year = Number(raw);
+  if (year < 2000 || year > 3000) {
+    throw new Error(`Invalid HVCS_BASIC_ALL_YEAR: ${raw}. Expected YYYY between 2000 and 3000.`);
+  }
+  return String(year);
+}
+
+async function selectBasicAllYear(page, targetYear) {
+  if (!targetYear) {
+    return false;
+  }
+
+  const changed = await page
+    .evaluate((desiredYear) => {
+      const normalize = (value) => String(value ?? "").replace(/\s+/g, " ").trim();
+      const isVisible = (el) => {
+        const style = window.getComputedStyle(el);
+        if (style.display === "none" || style.visibility === "hidden") return false;
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      };
+      const dispatch = (el) => {
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      };
+
+      const selects = Array.from(document.querySelectorAll("select")).filter(isVisible);
+      for (const select of selects) {
+        const option = select.options[select.selectedIndex];
+        const selected = normalize(option?.value || option?.textContent || "");
+        const localText = normalize(
+          [
+            select.parentElement?.textContent || "",
+            select.previousElementSibling?.textContent || "",
+            select.nextElementSibling?.textContent || "",
+          ].join(" ")
+        );
+        if (!localText.includes("年")) continue;
+
+        const options = Array.from(select.options || []);
+        const match = options.find((opt) => {
+          const value = normalize(opt.value);
+          const text = normalize(opt.textContent);
+          return value === desiredYear || text === desiredYear || text === `${desiredYear} 年`;
+        });
+        if (!match) continue;
+
+        if (selected === desiredYear || selected === `${desiredYear} 年`) {
+          return false;
+        }
+
+        select.value = match.value;
+        dispatch(select);
+        return true;
+      }
+
+      return false;
+    }, targetYear)
+    .catch(() => false);
+
+  if (changed) {
+    await waitForPageSettled(page, 700);
+  }
+
+  return changed;
+}
+
 async function saveBasicAllArtifact(page, context) {
+  const targetBasicAllYear = parseTargetBasicAllYear();
   await openBasicTab(page, USER_PROFILE_TEXT);
   const basicTables = await extractBasicSections(page);
   const electricNumber = await detectCurrentElectricNumber(page);
 
   await openBasicTab(page, ENERGY_USAGE_TEXT);
+  await selectBasicAllYear(page, targetBasicAllYear);
   const selectedYearFromEnergyUsage = await detectSelectedYear(page);
   const energyUsageExtracted = await extractSingleSectionTableByHints(page, "用電紀錄", [
     "電費月份",
@@ -2204,6 +2279,7 @@ async function saveBasicAllArtifact(page, context) {
   const energyUsageTables = aggregateEnergyUsageSections(energyUsageExtracted);
 
   await openBasicTab(page, PRICE_RECORD_TEXT);
+  await selectBasicAllYear(page, targetBasicAllYear);
   const selectedYearFromPrice = await detectSelectedYear(page);
   const priceTables = await extractSingleSectionTableByHints(page, "電費紀錄", [
     "電費月份",
@@ -2212,6 +2288,7 @@ async function saveBasicAllArtifact(page, context) {
     "總額",
   ]);
   const selectedYear =
+    targetBasicAllYear ||
     selectedYearFromEnergyUsage ||
     selectedYearFromPrice ||
     String(new Date().getFullYear());

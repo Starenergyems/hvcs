@@ -135,6 +135,7 @@ Basic all:
 
 ```bash
 HVCS_ELECTRIC_NUMBER='your-electric-number' \
+HVCS_BASIC_ALL_YEAR=2025 \
 npm run hvcs:basic:all
 ```
 
@@ -299,6 +300,7 @@ To run `用戶資料 + 用電紀錄 + 電費紀錄` in one shot and save:
 - `artifacts/hvcs-basic-all/<electric-number>/<selected-year>.json`
 
 ```bash
+HVCS_BASIC_ALL_YEAR=2025 \
 npm run basic:all
 ```
 
@@ -307,10 +309,13 @@ To run `用戶資料 + 用電紀錄 + 電費紀錄` first and then extract an ex
 - `artifacts/hvcs-power-analyze-range/<electric-number>/<YYYY-MM-DD>_to_<YYYY-MM-DD>.json`
 
 ```bash
+HVCS_BASIC_ALL_YEAR=2025 \
 HVCS_POWER_ANALYZE_START_DATE=2026-01-31 \
 HVCS_POWER_ANALYZE_END_DATE=2026-02-27 \
 npm run open:all-range
 ```
+
+`HVCS_BASIC_ALL_YEAR` is optional. When set, the extractor switches the `用電紀錄 / 電費紀錄` year selector before saving `hvcs-basic-all`, which is required for older bill years such as 2025.
 
 To inspect navigation behavior manually (dashboard -> cycle) and save request/response trace metadata:
 
