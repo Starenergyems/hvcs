@@ -17,16 +17,18 @@
     "hvcs:power:month": "bash scripts/run-hvcs.sh --mode=headless open:power-analyze-month",
     "hvcs:power:range": "bash scripts/run-hvcs.sh --mode=headless open:power-analyze-range",
     "hvcs:watch": "bash scripts/watch-hvcs-progress.sh",
-    "open:cycle": "HVCS_TARGET_PAGE=cycle node scripts/extract-dashboard.js",
-    "basic:all": "HVCS_TARGET_PAGE=all node scripts/extract-dashboard.js",
-    "open:all-month": "HVCS_TARGET_PAGE=all_month node scripts/extract-dashboard.js",
-    "open:all-range": "HVCS_TARGET_PAGE=all_range node scripts/extract-dashboard.js",
-    "open:basic": "HVCS_TARGET_PAGE=basic node scripts/extract-dashboard.js",
-    "open:energy_usage": "HVCS_TARGET_PAGE=energy_usage node scripts/extract-dashboard.js",
-    "open:power-analyze": "HVCS_TARGET_PAGE=power_analyze node scripts/extract-dashboard.js",
-    "open:power-analyze-month": "HVCS_TARGET_PAGE=power_analyze_month node scripts/extract-dashboard.js",
-    "open:power-analyze-range": "HVCS_TARGET_PAGE=power_analyze_range node scripts/extract-dashboard.js",
-    "open:price": "HVCS_TARGET_PAGE=price node scripts/extract-dashboard.js"
+    "open:cycle": "node scripts/run-extract.js --target cycle",
+    "basic:all": "node scripts/run-extract.js --target all",
+    "open:all-month": "node scripts/run-extract.js --target all_month",
+    "open:all-range": "node scripts/run-extract.js --target all_range",
+    "open:basic": "node scripts/run-extract.js --target basic",
+    "open:energy_usage": "node scripts/run-extract.js --target energy_usage",
+    "open:power-analyze": "node scripts/run-extract.js --target power_analyze",
+    "open:power-analyze-month": "node scripts/run-extract.js --target power_analyze_month",
+    "open:power-analyze-range": "node scripts/run-extract.js --target power_analyze_range",
+    "open:price": "node scripts/run-extract.js --target price",
+    "extract:target": "node scripts/run-extract.js",
+    "report:hvcs": "node scripts/render-hvcs-report.js"
   },
   "dependencies": {
     "playwright": "^1.52.0"

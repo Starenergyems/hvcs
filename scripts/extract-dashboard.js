@@ -184,6 +184,49 @@ function loadEnvFile() {
   }
 }
 
+function quoteEnvValue(value) {
+  const raw = String(value || "");
+  if (/^[A-Za-z0-9_.@:-]*$/.test(raw)) {
+    return raw;
+  }
+  return JSON.stringify(raw);
+}
+
+function rememberEnvValue(key, value) {
+  const rawValue = String(value || "").trim();
+  if (!key || !rawValue) {
+    return;
+  }
+
+  const nextLine = `${key}=${quoteEnvValue(rawValue)}`;
+  if (!fs.existsSync(ENV_PATH)) {
+    fs.writeFileSync(ENV_PATH, `${nextLine}\n`);
+    return;
+  }
+
+  const lines = fs.readFileSync(ENV_PATH, "utf8").split(/\r?\n/);
+  let replaced = false;
+  const updated = lines.map((line) => {
+    const separator = line.indexOf("=");
+    if (separator === -1 || line.trim().startsWith("#")) {
+      return line;
+    }
+
+    const existingKey = line.slice(0, separator).trim();
+    if (existingKey !== key) {
+      return line;
+    }
+
+    replaced = true;
+    return nextLine;
+  });
+
+  if (!replaced) {
+    updated.push(nextLine);
+  }
+
+  fs.writeFileSync(ENV_PATH, `${updated.join("\n").replace(/\n*$/, "")}\n`);
+}
 function normalizeText(value) {
   return (value || "").replace(/\s+/g, " ").trim();
 }
@@ -425,23 +468,36 @@ async function pageLooksLikeEnergyUsage(page) {
   return (await rows.count().catch(() => 0)) > 1;
 }
 
-async function promptForManualNavigation(page, targetDescription) {
+async function promptForManualNavigation(page, targetDescription, timeoutMs = DASHBOARD_LOAD_TIMEOUT_MS) {
+  const context = page.context();
   const startUrl = page.url();
   const startText = await page.locator("body").innerText().catch(() => "");
 
   log(`Could not navigate automatically to ${targetDescription}.`);
-  log(`Navigate there manually in the browser, then press Enter here.`);
-  await waitForEnter("> ");
-  await waitForPageSettled(page);
+  log("Navigate there manually in the browser.");
+  log("The script will continue automatically once the page changes.");
 
-  const currentUrl = page.url();
-  const currentText = await page.locator("body").innerText().catch(() => "");
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    page = await getActivePage(context, page);
+    await waitForPageSettled(page, 150);
 
-  if (currentUrl === startUrl && normalizeText(currentText) === normalizeText(startText)) {
-    log("No page change was detected. If the page updated without a full navigation, press Enter once more after it finishes rendering.");
-    await waitForEnter("> ");
-    await waitForPageSettled(page);
+    if (await pageLooksLikeTarget(page)) {
+      return page;
+    }
+
+    const currentUrl = page.url();
+    const currentText = await page.locator("body").innerText().catch(() => "");
+    if (currentUrl !== startUrl || normalizeText(currentText) !== normalizeText(startText)) {
+      return page;
+    }
+
+    await page.waitForTimeout(1000);
   }
+
+  throw new Error(
+    `Manual navigation to ${targetDescription} was not detected within ${Math.round(timeoutMs / 1000)} seconds.`
+  );
 }
 
 async function gotoBaseUrlWithRetry(page) {
@@ -812,10 +868,12 @@ async function waitForManualElectricNumberSelection(context, page) {
     page = await getActivePage(context, page);
     await waitForPageSettled(page);
   }
-
   const selected = await detectSelectedElectricNumber(page);
   if (selected) {
-    log(`Detected 電號 context: ${selected}`);
+    process.env.HVCS_ELECTRIC_NUMBER = selected;
+    rememberEnvValue("HVCS_ELECTRIC_NUMBER", selected);
+    log(`Detected electric-number context: ${selected}`);
+    log(`Remembered HVCS_ELECTRIC_NUMBER in ${ENV_PATH}`);
   }
 
   return { page, selected };
@@ -912,7 +970,7 @@ async function navigateToTarget(context, page) {
       }
       page = clickedCyclePage || page;
     } else {
-      await promptForManualNavigation(page, `\`${CYCLE_TEXT}\``);
+      return await promptForManualNavigation(page, `\`${CYCLE_TEXT}\``);
     }
 
     return page;
@@ -933,8 +991,7 @@ async function navigateToTarget(context, page) {
       return analyzePage;
     }
 
-    await promptForManualNavigation(page, "`需量分析`");
-    return page;
+    return await promptForManualNavigation(page, "`需量分析`");
   }
 
   if (TARGET_PAGE === "basic") {
@@ -954,8 +1011,7 @@ async function navigateToTarget(context, page) {
     const profileStartUrl = page.url();
     const profileStartText = await page.locator("body").innerText().catch(() => "");
     if (!(await clickByText(page, USER_PROFILE_TEXT))) {
-      await promptForManualNavigation(page, `\`${USER_PROFILE_TEXT}\``);
-      return page;
+      return await promptForManualNavigation(page, `\`${USER_PROFILE_TEXT}\``);
     }
 
     const profilePage = await waitForTargetTransition(context, page, profileStartUrl, profileStartText);
@@ -980,8 +1036,7 @@ async function navigateToTarget(context, page) {
     const startText = await page.locator("body").innerText().catch(() => "");
 
     if (!(await clickByText(page, ENERGY_USAGE_TEXT))) {
-      await promptForManualNavigation(page, `\`${ENERGY_USAGE_TEXT}\``);
-      return page;
+      return await promptForManualNavigation(page, `\`${ENERGY_USAGE_TEXT}\``);
     }
     await waitForTabRendered(page, normalizeText(startText), GENERAL_RENDER_TIMEOUT_MS);
 
@@ -990,8 +1045,7 @@ async function navigateToTarget(context, page) {
       return usagePage;
     }
 
-    await promptForManualNavigation(page, `\`${ENERGY_USAGE_TEXT}\``);
-    return page;
+    return await promptForManualNavigation(page, `\`${ENERGY_USAGE_TEXT}\``);
   }
 
   if (TARGET_PAGE === "price") {
@@ -1010,8 +1064,7 @@ async function navigateToTarget(context, page) {
     const startText = await page.locator("body").innerText().catch(() => "");
 
     if (!(await clickByText(page, PRICE_RECORD_TEXT))) {
-      await promptForManualNavigation(page, `\`${PRICE_RECORD_TEXT}\``);
-      return page;
+      return await promptForManualNavigation(page, `\`${PRICE_RECORD_TEXT}\``);
     }
     await waitForTabRendered(page, normalizeText(startText), GENERAL_RENDER_TIMEOUT_MS);
 
@@ -1020,15 +1073,14 @@ async function navigateToTarget(context, page) {
       return pricePage;
     }
 
-    await promptForManualNavigation(page, `\`${PRICE_RECORD_TEXT}\``);
-    return page;
+    return await promptForManualNavigation(page, `\`${PRICE_RECORD_TEXT}\``);
   }
 
   const startUrl = page.url();
   const startText = await page.locator("body").innerText().catch(() => "");
 
   if (!(await clickByText(page, DASHBOARD_TEXT))) {
-    await promptForManualNavigation(page, "`本日用電儀表板`");
+    page = await promptForManualNavigation(page, "`本日用電儀表板`");
   } else {
     const dashboardPage = await waitForTargetTransition(context, page, startUrl, startText);
     page = dashboardPage || page;
@@ -1751,6 +1803,140 @@ function parseTargetPowerAnalyzeRange() {
 
   return { start, end };
 }
+function parseOptionalPositiveIntEnv(name) {
+  const raw = normalizeText(process.env[name] || "");
+  if (!raw) return null;
+  if (!/^\d+$/.test(raw)) {
+    throw new Error(`${name} must be a positive integer.`);
+  }
+  return Number(raw);
+}
+
+function parseBillingPeriodDate(rawValue, fieldName) {
+  const raw = normalizeText(rawValue || "");
+  const match = raw.match(/^(\d{2,4})\/(\d{1,2})\/(\d{1,2})$/);
+  if (!match) {
+    throw new Error(`Invalid billing period ${fieldName}: ${raw}.`);
+  }
+
+  const parsedYear = Number(match[1]);
+  const year = parsedYear < 1911 ? parsedYear + 1911 : parsedYear;
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  return buildDateInfo(year, month, day);
+}
+
+function parseBillingPeriodRange(rawValue) {
+  const raw = normalizeText(rawValue || "");
+  const match = raw.match(/(\d{2,4}\/\d{1,2}\/\d{1,2})\s*~\s*(\d{2,4}\/\d{1,2}\/\d{1,2})/);
+  if (!match) return null;
+  const start = parseBillingPeriodDate(match[1], "start");
+  const end = parseBillingPeriodDate(match[2], "end");
+  if (start.isoDate > end.isoDate) {
+    throw new Error(`Invalid billing period range: ${raw}.`);
+  }
+  return { start, end, raw };
+}
+
+function parseBillingMonthLabel(rawValue) {
+  const raw = normalizeText(rawValue || "");
+  if (raw.length > 6) return null;
+  const match = raw.match(/^(\d{1,2})\D+$/);
+  if (!match) return null;
+  const month = Number(match[1]);
+  return month >= 1 && month <= 12 ? month : null;
+}
+
+function flattenPrimitiveObjects(value, out = []) {
+  if (Array.isArray(value)) {
+    value.forEach((item) => flattenPrimitiveObjects(item, out));
+    return out;
+  }
+
+  if (!value || typeof value !== "object") {
+    return out;
+  }
+
+  const entries = Object.entries(value);
+  if (entries.length && entries.every(([, item]) => item == null || typeof item !== "object")) {
+    out.push(value);
+  }
+
+  for (const [, item] of entries) {
+    flattenPrimitiveObjects(item, out);
+  }
+  return out;
+}
+
+function extractBillingPeriodsFromBasicAllPayload(payload) {
+  const rows = flattenPrimitiveObjects(payload?.price || payload);
+  const periods = [];
+
+  for (const row of rows) {
+    const values = Object.values(row).map((value) => normalizeText(value));
+    const billMonth = values.map(parseBillingMonthLabel).find((value) => value != null);
+    const period = values.map(parseBillingPeriodRange).find(Boolean);
+    if (!billMonth || !period) continue;
+
+    periods.push({
+      bill_month: billMonth,
+      start: period.start,
+      end: period.end,
+      raw_period: period.raw,
+    });
+  }
+
+  periods.sort((left, right) => left.bill_month - right.bill_month);
+  return periods;
+}
+
+function readBillingPeriodsFromBasicAllArtifact(basicAllJsonPath) {
+  const payload = JSON.parse(fs.readFileSync(basicAllJsonPath, "utf8"));
+  const periods = extractBillingPeriodsFromBasicAllPayload(payload);
+  if (!periods.length) {
+    throw new Error(`No billing periods were found in ${basicAllJsonPath}.`);
+  }
+  return periods;
+}
+
+function resolveTargetPowerAnalyzeRangeFromBasicAll(basicAllJsonPath) {
+  const explicitStart = normalizeText(process.env.HVCS_POWER_ANALYZE_START_DATE || "");
+  const explicitEnd = normalizeText(process.env.HVCS_POWER_ANALYZE_END_DATE || "");
+  if (explicitStart || explicitEnd) {
+    return { ...parseTargetPowerAnalyzeRange(), source: "explicit_dates" };
+  }
+
+  const billMonth = parseOptionalPositiveIntEnv("HVCS_BILL_MONTH");
+  const billYear = normalizeText(process.env.HVCS_BILL_YEAR || process.env.HVCS_BASIC_ALL_YEAR || "");
+  if (!billMonth && !billYear) {
+    throw new Error(
+      "Set either HVCS_POWER_ANALYZE_START_DATE/HVCS_POWER_ANALYZE_END_DATE, HVCS_BILL_MONTH, or HVCS_BILL_YEAR for all_range."
+    );
+  }
+
+  const periods = readBillingPeriodsFromBasicAllArtifact(basicAllJsonPath);
+
+  if (billMonth) {
+    if (billMonth < 1 || billMonth > 12) {
+      throw new Error("HVCS_BILL_MONTH must be between 1 and 12.");
+    }
+    const match = periods.find((period) => period.bill_month === billMonth);
+    if (!match) {
+      throw new Error(`Bill month ${billMonth} was not found in ${basicAllJsonPath}.`);
+    }
+    return { start: match.start, end: match.end, bill_month: billMonth, source: "bill_month" };
+  }
+
+  const start = periods.reduce((earliest, period) => (period.start.isoDate < earliest.isoDate ? period.start : earliest), periods[0].start);
+  const end = periods.reduce((latest, period) => (period.end.isoDate > latest.isoDate ? period.end : latest), periods[0].end);
+  return {
+    start,
+    end,
+    bill_year: billYear,
+    bill_months: periods.map((period) => period.bill_month),
+    source: "bill_year",
+  };
+}
 
 function buildDateInfo(year, month, day) {
   const yyyy = String(year).padStart(4, "0");
@@ -2061,8 +2247,7 @@ async function openBasicTab(page, tabText) {
   const startText = await page.locator("body").innerText().catch(() => "");
 
   if (!(await clickByText(page, tabText))) {
-    await promptForManualNavigation(page, `\`${tabText}\``);
-    return page;
+    return await promptForManualNavigation(page, `\`${tabText}\``);
   }
 
   await waitForPageSettled(page);
@@ -2368,10 +2553,10 @@ async function savePowerAnalyzeMonthArtifact(page, context) {
   return artifactPath;
 }
 
-async function savePowerAnalyzeRangeArtifact(page, context) {
+async function savePowerAnalyzeRangeArtifact(page, context, targetRangeOverride = null) {
   await ensurePowerAnalyzeFifteenMin(page);
 
-  const targetRange = parseTargetPowerAnalyzeRange();
+  const targetRange = targetRangeOverride || parseTargetPowerAnalyzeRange();
   const electricNumber = await detectCurrentElectricNumber(page);
   const rangeDates = listDateRange(targetRange.start, targetRange.end);
   const daily = [];
@@ -3137,10 +3322,23 @@ async function main() {
       await waitForPageSettled(targetPage);
       await refreshSavedState(context, targetPage, "power analyze range navigation");
 
-      const powerRangeArtifactPath = await savePowerAnalyzeRangeArtifact(targetPage, context);
+      const targetRange = resolveTargetPowerAnalyzeRangeFromBasicAll(basicAllJsonPath);
+      log(`Resolved PowerAnalyze range from ${targetRange.source}: ${targetRange.start.slashDate} ~ ${targetRange.end.slashDate}`);
+      updateProgress("range_resolved", "Resolved PowerAnalyze range from bill data.", {
+        basic_all_artifact_path: basicAllJsonPath,
+        source: targetRange.source,
+        range_start_date: targetRange.start.slashDate,
+        range_end_date: targetRange.end.slashDate,
+        bill_month: targetRange.bill_month || null,
+        bill_year: targetRange.bill_year || null,
+        bill_months: targetRange.bill_months || null,
+      });
+
+      const powerRangeArtifactPath = await savePowerAnalyzeRangeArtifact(targetPage, context, targetRange);
       updateProgress("completed", "Saved combined basic-all and range artifacts.", {
         basic_all_artifact_path: basicAllJsonPath,
         power_range_artifact_path: powerRangeArtifactPath,
+        source: targetRange.source,
       });
       log(`Saved artifact JSON: ${powerRangeArtifactPath}`);
       return;
