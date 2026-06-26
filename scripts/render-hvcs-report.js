@@ -71,17 +71,36 @@ function findContractKw(payload) {
   return null;
 }
 
+const BILL_KEYS = {
+  month: "\u96fb\u8cbb\u6708\u4efd",
+  period: "\u8a08\u8cbb\u671f\u9593",
+  basicFee: "\u57fa\u672c\u96fb\u8cbb_\u7d04\u5b9a",
+  energyFee: "\u6d41\u52d5\u96fb\u8cbb",
+  basicFee2: "\u57fa\u672c\u96fb\u8cbb_\u7d04\u5b9a_2",
+  powerFactor: "\u529f\u7387\u56e0\u6578",
+  powerFactorAdjustment: "\u529f\u7387\u56e0\u6578\u8abf\u6574\u8cbb",
+  otherAdjustment: "\u52a0\u6e1b\u6536\u9805\u91d1\u984d_\u5099\u8a3b",
+  total: "\u7e3d\u984d",
+  subtotal: "\u5408\u8a08",
+};
+
 function billRows(payload) {
   return flattenObjects(payload.price || [])
-    .filter((row) => Object.values(row).some((value) => /\d{2,4}\/\d{1,2}\/\d{1,2}\s*~/.test(String(value || ""))))
-    .map((row) => {
-      const values = Object.values(row).map((value) => String(value ?? "").trim());
-      const month = values.map((value) => value.match(/^(\d{1,2})\D+$/)?.[1]).find(Boolean) || "";
-      const period = values.map((value) => value.match(/\d{2,4}\/\d{1,2}\/\d{1,2}\s*~\s*\d{2,4}\/\d{1,2}\/\d{1,2}/)?.[0]).find(Boolean) || "";
-      const numeric = values.map(num).filter((value) => value != null);
-      return { month, period, total: numeric.at(-1), raw: row };
-    });
+    .filter((row) => Object.values(row).some((value) => /\d{2,4}\/\d{1,2}\/\d{1,2}\s*~/.test(String(value || ""))) || String(row[BILL_KEYS.month] || "").includes(BILL_KEYS.subtotal))
+    .map((row) => ({
+      month: String(row[BILL_KEYS.month] || ""),
+      period: String(row[BILL_KEYS.period] || ""),
+      basicFee: num(row[BILL_KEYS.basicFee]),
+      energyFee: num(row[BILL_KEYS.energyFee]),
+      basicFee2: num(row[BILL_KEYS.basicFee2]),
+      powerFactor: num(row[BILL_KEYS.powerFactor]),
+      powerFactorAdjustment: num(row[BILL_KEYS.powerFactorAdjustment]),
+      otherAdjustment: num(row[BILL_KEYS.otherAdjustment]),
+      total: num(row[BILL_KEYS.total]),
+      raw: row,
+    }));
 }
+
 
 const TOU = {
   offPeak: "\u96e2\u5cf0",
@@ -219,7 +238,45 @@ function colorForCategory(category) {
   return "#eef2f7";
 }
 
-function axes(width, height, left, right, top, bottom, max, xCount) {
+function defaultTickIndices(count, maxTicks = 8) {
+  if (count <= 0) return [];
+  if (count === 1) return [0];
+  const last = count - 1;
+  const step = Math.max(1, Math.ceil(last / Math.max(1, maxTicks - 1)));
+  const ticks = [];
+  for (let i = 0; i < count; i += step) ticks.push(i);
+  if (ticks[ticks.length - 1] !== last) ticks.push(last);
+  return ticks;
+}
+
+function timeTickIndices(points, hourStep = 4) {
+  const ticks = [];
+  for (let i = 0; i < points.length; i += 1) {
+    const label = String(points[i]?.x || points[i]?.time || "");
+    const match = label.match(/^(\d{1,2}):(\d{2})$/);
+    if (!match) continue;
+    const hour = Number(match[1]);
+    const minute = Number(match[2]);
+    if (minute === 0 && hour % hourStep === 0) ticks.push(i);
+  }
+  if (!ticks.includes(0)) ticks.unshift(0);
+  if (points.length && !ticks.includes(points.length - 1)) ticks.push(points.length - 1);
+  return Array.from(new Set(ticks)).sort((a, b) => a - b);
+}
+
+function xTickObjects(points, maxTicks = 10) {
+  return defaultTickIndices(points.length, maxTicks).map((index) => ({ index, label: points[index]?.x || points[index]?.date || "" }));
+}
+
+function xTickLabels(width, height, left, right, count, ticks, y, rotate = false) {
+  return ticks.map((tick) => {
+    const denom = Math.max(1, count - 1);
+    const x = left + (tick.index * (width - left - right)) / denom;
+    if (rotate) return `<text x="${x.toFixed(1)}" y="${y}" text-anchor="end" transform="rotate(-35 ${x.toFixed(1)} ${y})">${esc(tick.label)}</text>`;
+    return `<text x="${x.toFixed(1)}" y="${y}" text-anchor="middle">${esc(tick.label)}</text>`;
+  }).join("");
+}
+function axes(width, height, left, right, top, bottom, max, xCount, xTicks = []) {
   let out = "";
   for (let i = 0; i <= 4; i += 1) {
     const y = top + i * (height - top - bottom) / 4;
@@ -227,14 +284,43 @@ function axes(width, height, left, right, top, bottom, max, xCount) {
     out += `<line class="grid" x1="${left}" y1="${y.toFixed(1)}" x2="${width-right}" y2="${y.toFixed(1)}"/>`;
     out += `<text x="8" y="${(y + 4).toFixed(1)}">${fmt(value, 0)}</text>`;
   }
-  const vSteps = Math.min(12, Math.max(2, xCount));
-  for (let i = 0; i <= vSteps; i += 1) {
-    const x = left + i * (width - left - right) / vSteps;
+  const ticks = xTicks.length ? xTicks : defaultTickIndices(xCount, 8).map((index) => ({ index, label: "" }));
+  for (const tick of ticks) {
+    const x = left + (tick.index * (width - left - right)) / Math.max(1, xCount - 1);
     out += `<line class="grid" x1="${x.toFixed(1)}" y1="${top}" x2="${x.toFixed(1)}" y2="${height-bottom}"/>`;
   }
   out += `<line class="axis" x1="${left}" y1="${height-bottom}" x2="${width-right}" y2="${height-bottom}"/>`;
   out += `<line class="axis" x1="${left}" y1="${top}" x2="${left}" y2="${height-bottom}"/>`;
   return out;
+}
+
+function contractExceedances(rows, contractKw) {
+  if (!contractKw) return { points: [], sampleCount: 0, dayCount: 0, maxKw: null, maxExcessKw: null, excessKwh: 0, top: [] };
+  const points = [];
+  for (const row of rows) {
+    for (const p of row.points || []) {
+      if (p.value > contractKw) {
+        points.push({ date: row.date, time: p.time, kw: p.value, tou: p.tou, excess_kw: p.value - contractKw });
+      }
+    }
+  }
+  points.sort((a, b) => b.excess_kw - a.excess_kw || b.kw - a.kw || String(a.date).localeCompare(String(b.date)) || String(a.time).localeCompare(String(b.time)));
+  return {
+    points,
+    sampleCount: points.length,
+    dayCount: new Set(points.map((p) => p.date)).size,
+    maxKw: points[0]?.kw ?? null,
+    maxExcessKw: points[0]?.excess_kw ?? null,
+    excessKwh: points.reduce((sum, p) => sum + p.excess_kw * 0.25, 0),
+    top: points.slice(0, 20),
+  };
+}
+
+function exceedanceSummarySection(exceedance, contractKw) {
+  if (!contractKw) return '<section><h2>Contract Capacity Exceedance</h2><p class="muted">No contract capacity was found in the source artifact.</p></section>';
+  const rows = (exceedance.top || []).map((p) => '<tr><td>' + esc(p.date) + '</td><td>' + esc(p.time) + '</td><td>' + fmt(p.kw, 1) + '</td><td>' + fmt(contractKw, 0) + '</td><td>' + fmt(p.excess_kw, 1) + '</td><td>' + esc(p.tou || '-') + '</td></tr>').join('');
+  const body = rows || '<tr><td colspan="6">No authenticated 15-minute load point exceeded contract capacity.</td></tr>';
+  return '<section><h2>Contract Capacity Exceedance</h2><div class="cards"><div class="card"><div class="label">Exceedance Samples</div><div class="value">' + fmt(exceedance.sampleCount, 0) + '</div></div><div class="card"><div class="label">Affected Days</div><div class="value">' + fmt(exceedance.dayCount, 0) + '</div></div><div class="card"><div class="label">Max Excess</div><div class="value">' + fmt(exceedance.maxExcessKw, 1) + ' kW</div></div><div class="card"><div class="label">Excess Energy Area</div><div class="value">' + fmt(exceedance.excessKwh, 1) + ' kWh</div></div></div><p class="muted">A point is marked when authenticated selected load is greater than contract capacity (' + fmt(contractKw, 0) + ' kW). Excess energy area is sum((kW - contract) * 0.25h), for screening only.</p><table><thead><tr><th>Date</th><th>Time</th><th>Load kW</th><th>Contract kW</th><th>Excess kW</th><th>TOU</th></tr></thead><tbody>' + body + '</tbody></table></section>';
 }
 
 function maxFor(seriesList, contractKw) {
@@ -248,6 +334,8 @@ function lineChart(seriesList, title, unit, options = {}) {
   const width = 980, height = 302, left = 58, right = 18, top = 24, bottom = 44;
   const points = seriesList[0]?.points || [];
   const max = maxFor(seriesList, options.contractKw);
+  const tickIndexes = timeTickIndices(points, 4);
+  const ticks = tickIndexes.map((index) => ({ index, label: points[index]?.x || "" }));
   const x = (i) => left + (i * (width - left - right)) / Math.max(1, points.length - 1);
   const y = (v) => height - bottom - ((num(v) || 0) / max) * (height - top - bottom);
   const bandW = (width - left - right) / Math.max(1, (options.touBands || []).length - 1);
@@ -258,41 +346,75 @@ function lineChart(seriesList, title, unit, options = {}) {
     const opacity = series.opacity ?? 0.25;
     return `<path d="${d}" fill="none" stroke="${color}" stroke-width="${series.width || 1.15}" opacity="${opacity}"><title>${esc(series.name)}</title></path>`;
   }).join("");
+  const exceedanceMarkers = options.contractKw ? seriesList.map((series) => series.points.map((p, i) => {
+    const value = num(p.y) || 0;
+    if (value <= options.contractKw) return "";
+    return '<circle class="exceedance-point" cx="' + x(i).toFixed(1) + '" cy="' + y(value).toFixed(1) + '" r="3.1"><title>' + esc(series.name) + ' '+ esc(p.x) + ' '+ fmt(value, 1) + ' kW; excess '+ fmt(value - options.contractKw, 1) + ' kW</title></circle>';
+  }).join("")).join("") : "";
   const contract = options.contractKw ? `<line class="contract" x1="${left}" y1="${y(options.contractKw).toFixed(1)}" x2="${width-right}" y2="${y(options.contractKw).toFixed(1)}"/><text x="${width-right-104}" y="${(y(options.contractKw)-5).toFixed(1)}" class="contract-label">Contract ${fmt(options.contractKw,0)} kW</text>` : "";
-  const labels = points.filter((_, i) => i === 0 || i === points.length - 1 || i % 16 === 15).map((p) => `<text x="${x(points.indexOf(p)).toFixed(1)}" y="${height - 12}" text-anchor="middle">${esc(p.x)}</text>`).join("");
+  const labels = xTickLabels(width, height, left, right, points.length, ticks, height - 12);
   const legend = Array.from(new Set((options.touBands || []).map((b) => b.category).filter(Boolean))).map((cat) => `<span><i style="background:${colorForCategory(cat)}"></i>${esc(cat)}</span>`).join("");
-  return `<figure><figcaption>${esc(title)}</figcaption><div class="legend">${legend}</div><svg viewBox="0 0 ${width} ${height}">${bands}${axes(width,height,left,right,top,bottom,max,points.length)}${contract}${paths}${labels}<text x="8" y="16">${esc(unit)}</text></svg></figure>`;
+  const exceedanceLegend = options.contractKw ? '<span><i class="exceedance-swatch"></i>Above contract</span>' : "";
+  return '<figure><figcaption>' + esc(title) + '</figcaption><div class="legend">' + legend + exceedanceLegend + '</div><svg viewBox="0 0 ' + width + ' ' + height + '">' + bands + axes(width,height,left,right,top,bottom,max,points.length,ticks) + contract + paths + exceedanceMarkers + labels + '<text x="8" y="16">' + esc(unit) + '</text></svg></figure>';
 }
 
 function barChart(points, title, unit, contractKw = null) {
-  const width = 980, height = 280, left = 58, right = 18, top = 24, bottom = 42;
+  const width = 980, height = 300, left = 58, right = 18, top = 24, bottom = 62;
   const max = Math.max(1, ...points.map((p) => num(p.y) || 0), contractKw || 0);
   const inner = width - left - right;
   const step = inner / Math.max(1, points.length);
+  const ticks = xTickObjects(points, 12);
   const y = (v) => height - bottom - ((num(v) || 0) / max) * (height - top - bottom);
+  const xCenter = (i) => left + i * step + step / 2;
   const bars = points.map((p, i) => {
     const v = num(p.y) || 0;
     const h = (v / max) * (height - top - bottom);
-    return `<rect x="${(left + i*step).toFixed(1)}" y="${(height-bottom-h).toFixed(1)}" width="${Math.max(2, step-2).toFixed(1)}" height="${h.toFixed(1)}"><title>${esc(p.x)} ${fmt(v,1)} ${esc(unit)}</title></rect>`;
+    const cls = contractKw && v > contractKw ? ' class="exceedance-bar"' : "";
+    const excess = contractKw && v > contractKw ? '; excess ' + fmt(v - contractKw, 1) + ' kW' : "";
+    const time = p.time ? '; peak time ' + p.time : "";
+    return '<rect' + cls + ' x="' + (left + i*step).toFixed(1) + '" y="' + (height-bottom-h).toFixed(1) + '" width="' + Math.max(2, step-2).toFixed(1) + '" height="' + h.toFixed(1) + '"><title>' + esc(p.date || p.x) + ' '+ fmt(v,1) + ' '+ esc(unit) + time + excess + '</title></rect>';
   }).join("");
   const contract = contractKw ? `<line class="contract" x1="${left}" y1="${y(contractKw).toFixed(1)}" x2="${width-right}" y2="${y(contractKw).toFixed(1)}"/>` : "";
-  return `<figure><figcaption>${esc(title)}</figcaption><svg viewBox="0 0 ${width} ${height}">${axes(width,height,left,right,top,bottom,max,points.length)}${contract}<g class="bars">${bars}</g></svg></figure>`;
+  let annotations = "";
+  if (points.length && points.some((p) => p.time)) {
+    const maxPoint = points.reduce((best, p, index) => (num(p.y) || 0) > (num(best.point?.y) || 0) ? { point: p, index } : best, { point: points[0], index: 0 });
+    const value = num(maxPoint.point.y) || 0;
+    annotations = '<line class="annotation-line" x1="' + xCenter(maxPoint.index).toFixed(1) + '" y1="' + top + '" x2="' + xCenter(maxPoint.index).toFixed(1) + '" y2="' + (height-bottom) + '"/><text class="annotation-label" x="' + xCenter(maxPoint.index).toFixed(1) + '" y="' + Math.max(14, y(value) - 8).toFixed(1) + '" text-anchor="middle">' + esc((maxPoint.point.date || maxPoint.point.x) + (maxPoint.point.time ? ' ' + maxPoint.point.time : '')) + '</text>';
+  }
+  const legend = contractKw ? '<div class="legend"><span><i class="exceedance-swatch"></i>Above contract</span></div>' : "";
+  return '<figure><figcaption>' + esc(title) + '</figcaption>' + legend + '<svg viewBox="0 0 ' + width + ' ' + height + '">' + axes(width,height,left,right,top,bottom,max,points.length,ticks) + contract + '<g class="bars">' + bars + '</g>' + annotations + xTickLabels(width,height,left,right,points.length,ticks,height - 16,true) + '<text x="8" y="16">' + esc(unit) + '</text></svg></figure>';
 }
 
-function heatmapSvg(rows) {
+function heatmapSvg(rows, contractKw = null) {
   const times = rows[0]?.points.map((p) => p.time) || [];
-  const cw = 8, ch = 12, left = 88, top = 28;
-  const width = left + times.length * cw + 18;
-  const height = top + rows.length * ch + 20;
+  const cw = 8, ch = 12, left = 88, top = 34;
+  const legendW = 220;
+  const width = left + times.length * cw + legendW;
+  const height = top + rows.length * ch + 28;
   const max = Math.max(1, ...rows.flatMap((row) => row.points.map((p) => p.value)));
   const color = (value) => {
     const t = Math.max(0, Math.min(1, value / max));
     return `rgb(${Math.round(238 - t * 185)},${Math.round(243 - t * 84)},${Math.round(247 - t * 50)})`;
   };
-  const rects = rows.map((row, r) => row.points.map((p, c) => `<rect x="${left + c*cw}" y="${top + r*ch}" width="${cw}" height="${ch}" fill="${color(p.value)}"><title>${esc(row.date)} ${esc(p.time)} ${fmt(p.value, 1)} kW</title></rect>`).join("")).join("");
-  const yLabels = rows.filter((_, i) => i % Math.max(1, Math.ceil(rows.length / 24)) === 0).map((row) => `<text x="${left - 8}" y="${top + rows.indexOf(row)*ch + 9}" text-anchor="end">${esc(row.date.slice(5))}</text>`).join("");
-  const xLabels = times.filter((_, i) => i % 16 === 0).map((time) => `<text x="${left + times.indexOf(time)*cw}" y="18" text-anchor="middle">${esc(time)}</text>`).join("");
-  return `<figure><figcaption>15-minute Load Heatmap</figcaption><svg class="heatmap" viewBox="0 0 ${width} ${height}">${xLabels}${yLabels}${rects}</svg></figure>`;
+  const rects = rows.map((row, r) => row.points.map((p, c) => {
+    const isExceed = contractKw && p.value > contractKw;
+    const cls = isExceed ? ' class="exceedance-cell"' : "";
+    const excess = isExceed ? '; excess ' + fmt(p.value - contractKw, 1) + ' kW' : "";
+    return '<rect' + cls + ' x="' + (left + c*cw) + '" y="' + (top + r*ch) + '" width="' + cw + '" height="' + ch + '" fill="' + color(p.value) + '"><title>' + esc(row.date) + ' '+ esc(p.time) + ' '+ fmt(p.value, 1) + ' kW' + excess + '</title></rect>';
+  }).join("")).join("");
+  const yTickStep = Math.max(1, Math.ceil(rows.length / 24));
+  const yLabels = rows.filter((_, i) => i % yTickStep === 0 || i === rows.length - 1).map((row) => `<text x="${left - 8}" y="${top + rows.indexOf(row)*ch + 9}" text-anchor="end">${esc(row.date.slice(5))}</text>`).join("");
+  const timeTicks = timeTickIndices(times.map((time) => ({ x: time })), 4).map((index) => ({ index, label: times[index] }));
+  const xLabels = timeTicks.map((tick) => `<text x="${left + tick.index*cw}" y="22" text-anchor="middle">${esc(tick.label)}</text><line class="grid" x1="${left + tick.index*cw}" y1="${top}" x2="${left + tick.index*cw}" y2="${top + rows.length*ch}"/>`).join("");
+  const scaleX = left + times.length * cw + 28;
+  const swatches = Array.from({ length: 8 }, (_, i) => {
+    const x = scaleX + i * 18;
+    const value = max * i / 7;
+    return `<rect x="${x}" y="${top}" width="18" height="12" fill="${color(value)}"/>`;
+  }).join("");
+  const magnitudeLegend = `<text x="${scaleX}" y="${top - 8}">Load magnitude (kW)</text>${swatches}<text x="${scaleX}" y="${top + 30}">0</text><text x="${scaleX + 144}" y="${top + 30}" text-anchor="end">${fmt(max,0)}</text>`;
+  const legend = contractKw ? '<div class="legend"><span><i class="exceedance-swatch"></i>Above contract</span></div>' : "";
+  return '<figure><figcaption>15-minute Load Heatmap</figcaption>' + legend + '<svg class="heatmap" viewBox="0 0 ' + width + ' ' + height + '">' + xLabels + yLabels + rects + magnitudeLegend + '</svg></figure>';
 }
 
 function profileSeriesForRows(rows, average = false) {
@@ -335,25 +457,26 @@ function main() {
   const outDir = path.resolve(opt("--out") || path.join(REPORTS_DIR, `hvcs-report-${electric}-${start}_to_${end}`));
   fs.mkdirSync(outDir, { recursive: true });
 
-  const dailyPeak = rows.map((row) => ({ x: row.date.slice(5), y: row.peakKw }));
+  const dailyPeak = rows.map((row) => ({ x: row.date.slice(5), date: row.date, y: row.peakKw, time: row.peakTime }));
   const dailyEnergy = rows.map((row) => ({ x: row.date.slice(5), y: row.totalKwh }));
-  const billTable = bills.map((bill) => `<tr><td>${esc(bill.month)}</td><td>${esc(bill.period)}</td><td>${fmt(bill.total, 0)}</td></tr>`).join("");
+  const exceedance = contractExceedances(rows, contractKw);
+  const billTable = bills.map((bill) => `<tr><td>${esc(bill.month)}</td><td>${esc(bill.period || "-")}</td><td>${fmt(bill.basicFee, 1)}</td><td>${fmt(bill.energyFee, 1)}</td><td>${fmt(bill.basicFee2, 1)}</td><td>${fmt(bill.powerFactor, 0)}</td><td>${fmt(bill.powerFactorAdjustment, 1)}</td><td>${fmt(bill.otherAdjustment, 1)}</td><td>${fmt(bill.total, 0)}</td></tr>`).join("");
   const bucketCounts = rows.reduce((acc, row) => { acc[dayBucket(row)] = (acc[dayBucket(row)] || 0) + 1; return acc; }, {});
 
   const html = `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>HVCS Source Report ${esc(start)} - ${esc(end)}</title><style>
-  :root{--ink:#172033;--muted:#657181;--line:#d8e0e8;--bg:#f5f7fa;--panel:#fff;--accent:#176fb8}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:"Segoe UI","Microsoft JhengHei",Arial,sans-serif}header{background:#fff;border-bottom:1px solid var(--line);padding:28px 34px 18px}h1{margin:0 0 8px;font-size:26px}main{display:grid;gap:18px;padding:22px 34px 38px}section{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:18px;overflow:auto}h2{margin:0 0 14px;font-size:18px}.muted{color:var(--muted)}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}.card{border:1px solid var(--line);border-radius:8px;background:#fbfcfe;padding:12px}.label{font-size:12px;color:var(--muted)}.value{font-size:22px;font-weight:650;margin-top:4px}table{border-collapse:collapse;width:100%;font-size:13px}th,td{border-bottom:1px solid var(--line);padding:8px 9px;text-align:left;white-space:nowrap}th{color:var(--muted);font-weight:600}figure{margin:0}figcaption{font-weight:650;margin-bottom:10px}svg{display:block;width:100%;height:auto}.axis{stroke:#8794a3;stroke-width:1}.grid{stroke:#d8e0e8;stroke-width:1}.line{fill:none;stroke:var(--accent);stroke-width:2.1}.bars rect{fill:#3a88c9}.contract{stroke:#111827;stroke-width:1.5;stroke-dasharray:6 4}.contract-label{fill:#111827;font-size:12px}.legend{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:6px;color:var(--muted);font-size:12px}.legend i{display:inline-block;width:16px;height:10px;border:1px solid var(--line);margin-right:4px;vertical-align:-1px}svg text{fill:#657181;font-size:11px}</style></head><body>
+  :root{--ink:#172033;--muted:#657181;--line:#d8e0e8;--bg:#f5f7fa;--panel:#fff;--accent:#176fb8}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:"Segoe UI","Microsoft JhengHei",Arial,sans-serif}header{background:#fff;border-bottom:1px solid var(--line);padding:28px 34px 18px}h1{margin:0 0 8px;font-size:26px}main{display:grid;gap:18px;padding:22px 34px 38px}section{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:18px;overflow:auto}h2{margin:0 0 14px;font-size:18px}.muted{color:var(--muted)}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}.card{border:1px solid var(--line);border-radius:8px;background:#fbfcfe;padding:12px}.label{font-size:12px;color:var(--muted)}.value{font-size:22px;font-weight:650;margin-top:4px}table{border-collapse:collapse;width:100%;font-size:13px}th,td{border-bottom:1px solid var(--line);padding:8px 9px;text-align:left;white-space:nowrap}th{color:var(--muted);font-weight:600}figure{margin:0}figcaption{font-weight:650;margin-bottom:10px}svg{display:block;width:100%;height:auto}.axis{stroke:#8794a3;stroke-width:1}.grid{stroke:#d8e0e8;stroke-width:1}.line{fill:none;stroke:var(--accent);stroke-width:2.1}.bars rect{fill:#3a88c9}.bars rect.exceedance-bar{fill:#d94841}.exceedance-point{fill:#d94841;stroke:#fff;stroke-width:1.2}.exceedance-cell{stroke:#d94841;stroke-width:1.4}.exceedance-swatch{background:#d94841!important}.annotation-line{stroke:#d94841;stroke-width:1;stroke-dasharray:3 3}.annotation-label{fill:#9f2722;font-size:11px;font-weight:600}.contract{stroke:#111827;stroke-width:1.5;stroke-dasharray:6 4}.contract-label{fill:#111827;font-size:12px}.legend{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:6px;color:var(--muted);font-size:12px}.legend i{display:inline-block;width:16px;height:10px;border:1px solid var(--line);margin-right:4px;vertical-align:-1px}svg text{fill:#657181;font-size:11px}</style></head><body>
 <header><h1>HVCS Source Report</h1><div class="muted">${esc(start)} - ${esc(end)} · Electric number ${esc(electric)}</div></header><main>
 <section><h2>Source Summary</h2><div class="cards"><div class="card"><div class="label">Total Energy</div><div class="value">${fmt(totalKwh,0)} kWh</div></div><div class="card"><div class="label">Peak Demand</div><div class="value">${fmt(peak.peakKw,1)} kW</div><div class="muted">${esc(peak.date)} ${esc(peak.peakTime)}</div></div><div class="card"><div class="label">Data Completeness</div><div class="value">${actualSamples}/${expectedSamples}</div><div class="muted">empty days: ${emptyDays}</div></div></div><p class="muted">Plotted load uses only authenticated HVCS TOU demand series: ${esc(plottedCategories.join(", ") || "-")}. If HVCS exposes overlapping TOU series at the same timestamp, the report selects one active value instead of summing duplicates. Contract/reference samples are excluded from load charts and used only as reference lines.</p></section>
 <section><h2>Site</h2><table><tbody><tr><th>Customer</th><td>${esc(customer || "-")}</td></tr><tr><th>Address</th><td>${esc(address || "-")}</td></tr><tr><th>Tariff</th><td>${esc(tariff || "-")}</td></tr><tr><th>Contract Capacity</th><td>${contractKw ? `${fmt(contractKw,0)} kW` : "-"}</td></tr></tbody></table></section>
 <section>${barChart(dailyPeak, "Daily Peak Demand", "kW", contractKw)}</section>
-<section>${lineChart([{ name:"Daily energy", color:"#176fb8", width:2.1, opacity:1, points: dailyEnergy }], "Daily Energy", "kWh")}</section>
+${exceedanceSummarySection(exceedance, contractKw)}
+<section>${barChart(dailyEnergy, "Daily Energy", "kWh")}</section>
 ${bucketSection(rows, "summer_working", "Summer working day (平日)", contractKw)}
 ${bucketSection(rows, "summer_offpeak", "Summer off-peak day (離峰日)", contractKw)}
 ${bucketSection(rows, "non_summer_working", "Non-summer working day (平日)", contractKw)}
 ${bucketSection(rows, "non_summer_offpeak", "Non-summer off-peak day (離峰日)", contractKw)}
-<section>${heatmapSvg(rows)}</section>
-<section><h2>Matched Day Counts</h2><table><tbody><tr><th>Summer working</th><td>${bucketCounts.summer_working || 0}</td></tr><tr><th>Summer off-peak</th><td>${bucketCounts.summer_offpeak || 0}</td></tr><tr><th>Non-summer working</th><td>${bucketCounts.non_summer_working || 0}</td></tr><tr><th>Non-summer off-peak</th><td>${bucketCounts.non_summer_offpeak || 0}</td></tr></tbody></table></section>
-<section><h2>Bill Table</h2><table><thead><tr><th>Bill Month</th><th>Billing Period</th><th>Total</th></tr></thead><tbody>${billTable}</tbody></table></section>
+<section>${heatmapSvg(rows, contractKw)}</section>
+<section><h2>Bill Table</h2><p class="muted">Money columns are in NTD. Power factor is percent.</p><table><thead><tr><th>Bill Month</th><th>Billing Period</th><th>Basic Fee (NTD)</th><th>Energy Fee (NTD)</th><th>Extra Basic Fee (NTD)</th><th>Power Factor (%)</th><th>PF Adjustment (NTD)</th><th>Other Adjustment (NTD)</th><th>Total (NTD)</th></tr></thead><tbody>${billTable}</tbody></table></section>
 <section><h2>Source Artifacts</h2><table><tbody><tr><th>Basic</th><td>${esc(path.relative(ROOT, path.resolve(basicPath)))}</td></tr><tr><th>Range</th><td>${esc(path.relative(ROOT, path.resolve(rangePath)))}</td></tr><tr><th>Generated</th><td>${esc(new Date().toISOString())}</td></tr></tbody></table></section>
 </main></body></html>`;
 
@@ -369,6 +492,12 @@ ${bucketSection(rows, "non_summer_offpeak", "Non-summer off-peak day (離峰日)
     contract_reference_sample_count: contractSampleCount,
     contract_reference_max_kw: contractMaxKwFromRange || null,
     overlapping_tou_slot_count: overlappingTouSlotCount,
+    contract_exceedance_sample_count: exceedance.sampleCount,
+    contract_exceedance_day_count: exceedance.dayCount,
+    contract_exceedance_max_kw: exceedance.maxKw,
+    contract_exceedance_max_excess_kw: exceedance.maxExcessKw,
+    contract_exceedance_excess_kwh: exceedance.excessKwh,
+    contract_exceedance_top: exceedance.top,
     day_classification: "TOU categories from extracted HVCS series; summer rule May 16-Oct 15 from Taipower season calendar.",
     basic_artifact: path.relative(ROOT, path.resolve(basicPath)),
     range_artifact: path.relative(ROOT, path.resolve(rangePath))
